@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-05-06 12:50:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_field",
+  "source_label",
+  "source_type",
+  "is_custom",
+  "column_break_diff",
+  "suggested_target",
+  "target_field",
+  "action",
+  "section_break_risk",
+  "risk"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_field",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Field",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "source_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Label",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "source_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Type",
+   "read_only": 1,
+   "columns": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_custom",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Custom",
+   "read_only": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "column_break_diff",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "suggested_target",
+   "fieldtype": "Data",
+   "label": "Suggested Target",
+   "read_only": 1
+  },
+  {
+   "fieldname": "target_field",
+   "fieldtype": "Autocomplete",
+   "in_list_view": 1,
+   "label": "Target Field",
+   "columns": 2,
+   "description": "Target fieldname on the Frappe CRM doctype. Leave empty to mark as Skip."
+  },
+  {
+   "default": "Unresolved",
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Action",
+   "options": "Map\nSkip\nUnresolved",
+   "columns": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_risk",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "risk",
+   "fieldtype": "Small Text",
+   "label": "Risk / Note",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "is_virtual": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-06 12:50:00.000000",
+ "modified_by": "Administrator",
+ "module": "Migrator",
+ "name": "CRM Migration Field Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 0
+}

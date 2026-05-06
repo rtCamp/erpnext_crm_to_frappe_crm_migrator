@@ -1,0 +1,133 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-05-06 13:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "s_doctype",
+  "t_doctype",
+  "status",
+  "ok_count",
+  "skipped_count",
+  "failed_count",
+  "child_reanchor_count",
+  "child_ok_count",
+  "child_skipped_count",
+  "child_failed_count",
+  "started_at",
+  "completed_at",
+  "last_error",
+  "sample_failed_names"
+ ],
+ "fields": [
+  {
+   "fieldname": "s_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Source DocType",
+   "options": "DocType",
+   "reqd": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "t_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Target DocType",
+   "options": "DocType",
+   "columns": 2
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nRunning\nSucceeded\nFailed\nBlocked\nSkipped",
+   "columns": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "ok_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "OK",
+   "columns": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "skipped_count",
+   "fieldtype": "Int",
+   "label": "Skipped"
+  },
+  {
+   "default": "0",
+   "fieldname": "failed_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Failed",
+   "columns": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "child_reanchor_count",
+   "fieldtype": "Int",
+   "label": "Child Rows Re-anchored"
+  },
+  {
+   "default": "0",
+   "fieldname": "child_ok_count",
+   "fieldtype": "Int",
+   "label": "Child Rows Inserted"
+  },
+  {
+   "default": "0",
+   "fieldname": "child_skipped_count",
+   "fieldtype": "Int",
+   "label": "Child Rows Skipped"
+  },
+  {
+   "default": "0",
+   "fieldname": "child_failed_count",
+   "fieldtype": "Int",
+   "label": "Child Rows Failed"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At"
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At"
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error"
+  },
+  {
+   "fieldname": "sample_failed_names",
+   "fieldtype": "Small Text",
+   "label": "Sample Failed Names",
+   "description": "Up to 50 source names that failed to insert, comma-separated."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "is_virtual": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-06 13:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Migrator",
+ "name": "CRM Migration Run Step",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 0
+}
