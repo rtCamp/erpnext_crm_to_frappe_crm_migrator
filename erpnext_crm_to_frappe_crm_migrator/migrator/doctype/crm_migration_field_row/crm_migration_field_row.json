@@ -70,14 +70,12 @@
    "description": "Target fieldname on the Frappe CRM doctype. Leave empty to mark as Skip."
   },
   {
-   "default": "Unresolved",
    "fieldname": "action",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Action",
-   "options": "Map\nSkip\nUnresolved",
-   "columns": 1,
-   "reqd": 1
+   "options": "\nMap\nSkip",
+   "columns": 1
   },
   {
    "fieldname": "section_break_risk",

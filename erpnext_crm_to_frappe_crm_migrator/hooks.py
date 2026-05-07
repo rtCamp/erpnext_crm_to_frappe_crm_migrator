@@ -4,7 +4,7 @@ app_publisher = "rtCamp"
 app_description = "One-time migration tool to move data from ERPNext CRM (Lead/Opportunity/Prospect) to Frappe CRM."
 app_email = "deepak.vkumar@rtcamp.com"
 app_license = "agpl-3.0"
-required_apps = ["frappe/erpnext", "frappe/crm"]
+required_apps = ["frappe/erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [

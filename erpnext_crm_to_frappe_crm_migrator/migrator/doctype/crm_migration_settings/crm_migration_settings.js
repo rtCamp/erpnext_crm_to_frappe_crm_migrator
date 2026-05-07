@@ -182,7 +182,7 @@ frappe.ui.form.on("CRM Migration Settings", {
 						if (s.skipped) return `<li>${dt}: <i>not installed — skipped</i></li>`;
 						return (
 							`<li><b>${dt}</b>: ${s.rows} fields ` +
-							`(${s.map} mapped, ${s.unresolved} unresolved` +
+							`(${s.map} mapped, ${s.unresolved} need decision` +
 							(s.with_risk ? `, ${s.with_risk} flagged` : "") +
 							`) — ${s.row_count} source rows</li>`
 						);
@@ -235,6 +235,9 @@ frappe.ui.form.on("CRM Migration Settings", {
 		SOURCE_DOCTYPES.forEach((dt) => render_mapped_summary(frm, dt));
 
 		// --- Per-tab "Mark all as Skip" grid button (only when not locked) ---
+		// Hits a server endpoint so the change is persisted in one round-trip
+		// — the form has disable_save() so client-side mutations have no
+		// save path otherwise, and Lock would still see the old blanks.
 		SOURCE_DOCTYPES.forEach((dt) => {
 			const slug = dt_to_slug(dt);
 			const table_field = `${slug}_field_mapping`;
@@ -243,28 +246,27 @@ frappe.ui.form.on("CRM Migration Settings", {
 			if (!grid || grid._skip_button_added) return;
 			if (is_locked(frm, dt)) return;
 			grid.add_custom_button(__("Mark all as Skip"), () => {
-				const rows = frm.doc[table_field] || [];
-				if (!rows.length) {
-					frappe.show_alert({
-						message: __("Nothing to skip — table is empty."),
-						indicator: "blue",
-					});
-					return;
-				}
-				let touched = 0;
-				rows.forEach((r) => {
-					if (r.action !== "Skip") {
-						r.action = "Skip";
-						r.target_field = "";
-						r.risk = "";
-						touched += 1;
-					}
-				});
-				frm.refresh_field(table_field);
-				frm.dirty();
-				frappe.show_alert({
-					message: __("{0} row(s) marked as Skip.", [touched]),
-					indicator: "green",
+				frappe.call({
+					method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.mark_all_as_skip",
+					args: { source_doctype: dt },
+					freeze: true,
+					freeze_message: __("Marking all as Skip…"),
+					callback(r) {
+						if (!r.message || !r.message.ok) return;
+						const touched = r.message.touched || 0;
+						if (!touched) {
+							frappe.show_alert({
+								message: __("Nothing to skip — table is empty or already done."),
+								indicator: "blue",
+							});
+						} else {
+							frappe.show_alert({
+								message: __("{0} row(s) marked as Skip.", [touched]),
+								indicator: "green",
+							});
+						}
+						frm.reload_doc();
+					},
 				});
 			});
 			grid._skip_button_added = true;

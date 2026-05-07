@@ -1,7 +1,6 @@
 {
  "actions": [],
- "allow_rename": 0,
- "creation": "2026-05-06 12:50:00.000000",
+ "creation": "2026-05-06 12:50:00",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -9,108 +8,131 @@
   "intro_html",
   "lead_tab",
   "lead_tab_notes",
+  "section_break_vltv",
   "target_lead",
   "lead_count",
+  "migrate_lead_btn",
+  "column_break_sxwc",
   "lead_locked",
   "lead_locked_on",
-  "lead_mapped_meta",
-  "lead_mapped_summary",
-  "lead_field_mapping",
   "lead_lock_btn",
   "lead_unlock_btn",
-  "migrate_lead_btn",
+  "lead_mapped_meta",
+  "section_break_jehu",
+  "lead_mapped_summary",
+  "lead_field_mapping",
   "opportunity_tab",
   "opportunity_tab_notes",
+  "opportunity_section_header",
   "target_opportunity",
   "opportunity_count",
+  "migrate_opportunity_btn",
+  "opportunity_column_header",
   "opportunity_locked",
   "opportunity_locked_on",
-  "opportunity_mapped_meta",
-  "opportunity_mapped_summary",
-  "opportunity_field_mapping",
   "opportunity_lock_btn",
   "opportunity_unlock_btn",
-  "migrate_opportunity_btn",
+  "opportunity_mapped_meta",
+  "opportunity_section_mapping",
+  "opportunity_mapped_summary",
+  "opportunity_field_mapping",
   "prospect_tab",
   "prospect_tab_notes",
+  "prospect_section_header",
   "target_prospect",
   "prospect_count",
+  "migrate_prospect_btn",
+  "prospect_column_header",
   "prospect_locked",
   "prospect_locked_on",
-  "prospect_mapped_meta",
-  "prospect_mapped_summary",
-  "prospect_field_mapping",
   "prospect_lock_btn",
   "prospect_unlock_btn",
-  "migrate_prospect_btn",
+  "prospect_mapped_meta",
+  "prospect_section_mapping",
+  "prospect_mapped_summary",
+  "prospect_field_mapping",
   "territory_tab",
   "territory_tab_notes",
+  "territory_section_header",
   "target_territory",
   "territory_count",
+  "migrate_territory_btn",
+  "territory_column_header",
   "territory_locked",
   "territory_locked_on",
-  "territory_mapped_meta",
-  "territory_mapped_summary",
-  "territory_field_mapping",
   "territory_lock_btn",
   "territory_unlock_btn",
-  "migrate_territory_btn",
+  "territory_mapped_meta",
+  "territory_section_mapping",
+  "territory_mapped_summary",
+  "territory_field_mapping",
   "industry_type_tab",
   "industry_type_tab_notes",
+  "industry_type_section_header",
   "target_industry_type",
   "industry_type_count",
+  "migrate_industry_type_btn",
+  "industry_type_column_header",
   "industry_type_locked",
   "industry_type_locked_on",
-  "industry_type_mapped_meta",
-  "industry_type_mapped_summary",
-  "industry_type_field_mapping",
   "industry_type_lock_btn",
   "industry_type_unlock_btn",
-  "migrate_industry_type_btn",
+  "industry_type_mapped_meta",
+  "industry_type_section_mapping",
+  "industry_type_mapped_summary",
+  "industry_type_field_mapping",
   "utm_source_tab",
   "utm_source_tab_notes",
+  "utm_source_section_header",
   "target_utm_source",
   "utm_source_count",
+  "migrate_utm_source_btn",
+  "utm_source_column_header",
   "utm_source_locked",
   "utm_source_locked_on",
-  "utm_source_mapped_meta",
-  "utm_source_mapped_summary",
-  "utm_source_field_mapping",
   "utm_source_lock_btn",
   "utm_source_unlock_btn",
-  "migrate_utm_source_btn",
+  "utm_source_mapped_meta",
+  "utm_source_section_mapping",
+  "utm_source_mapped_summary",
+  "utm_source_field_mapping",
   "opportunity_lost_reason_tab",
   "opportunity_lost_reason_tab_notes",
+  "opportunity_lost_reason_section_header",
   "target_opportunity_lost_reason",
   "opportunity_lost_reason_count",
+  "migrate_opportunity_lost_reason_btn",
+  "opportunity_lost_reason_column_header",
   "opportunity_lost_reason_locked",
   "opportunity_lost_reason_locked_on",
-  "opportunity_lost_reason_mapped_meta",
-  "opportunity_lost_reason_mapped_summary",
-  "opportunity_lost_reason_field_mapping",
   "opportunity_lost_reason_lock_btn",
   "opportunity_lost_reason_unlock_btn",
-  "migrate_opportunity_lost_reason_btn",
+  "opportunity_lost_reason_mapped_meta",
+  "opportunity_lost_reason_section_mapping",
+  "opportunity_lost_reason_mapped_summary",
+  "opportunity_lost_reason_field_mapping",
   "item_tab",
   "item_tab_notes",
+  "item_section_header",
   "target_item",
   "item_count",
+  "migrate_item_btn",
+  "item_column_header",
   "item_locked",
   "item_locked_on",
-  "item_mapped_meta",
-  "item_mapped_summary",
-  "item_field_mapping",
   "item_lock_btn",
   "item_unlock_btn",
-  "migrate_item_btn"
+  "item_mapped_meta",
+  "item_section_mapping",
+  "item_mapped_summary",
+  "item_field_mapping"
  ],
  "fields": [
   {
    "fieldname": "intro_html",
    "fieldtype": "HTML",
-   "options": "<div class=\"text-muted\" style=\"padding:8px 0\">Use <b>Refresh Diff</b> to scan ERPNext source doctypes and rebuild every tab's field-mapping table. Resolve any rows whose <b>Action</b> is <b>Unresolved</b>, then click <b>Lock Mapping</b> to freeze the resolved entries into <a href=\"/app/crm-migration-field-map\">CRM Migration Field Map</a> — the runner consumes that table.</div><div class=\"alert alert-info\" style=\"margin-top:8px;padding:10px 12px;font-size:12px\"><b>Tip — pre-create matching custom fields on the CRM side.</b> If your ERPNext doctypes have custom fields you want migrated, add a custom field with the <b>same fieldname</b> on the corresponding Frappe CRM doctype <i>before</i> clicking Refresh Diff. Same-name fields are auto-mapped by the diff, so you avoid resolving each one manually. Mappings: Lead &rarr; CRM Lead, Opportunity &rarr; CRM Deal, Prospect &rarr; CRM Organization, Territory &rarr; CRM Territory, Industry Type &rarr; CRM Industry, UTM Source &rarr; CRM Lead Source, Opportunity Lost Reason &rarr; CRM Lost Reason, Item &rarr; CRM Product.</div>"
+   "options": "<div class=\"text-muted\" style=\"padding:8px 0\">Use <b>Refresh Diff</b> to scan ERPNext source doctypes and rebuild every tab's field-mapping table. For each row, set <b>Action</b> to <b>Map</b> (with a target field) or <b>Skip</b>; rows left blank need a decision. Then click <b>Lock & Freeze</b> on each tab to commit the resolved entries into <a href=\"/app/crm-migration-field-map\">CRM Migration Field Map</a> \u2014 the runner consumes that table.</div><div class=\"alert alert-info\" style=\"margin-top:8px;padding:10px 12px;font-size:12px\"><b>Tip \u2014 pre-create matching custom fields on the CRM side.</b> If your ERPNext doctypes have custom fields you want migrated, add a custom field with the <b>same fieldname</b> on the corresponding Frappe CRM doctype <i>before</i> clicking Refresh Diff. Same-name fields are auto-mapped by the diff, so you avoid resolving each one manually. Mappings: Lead &rarr; CRM Lead, Opportunity &rarr; CRM Deal, Prospect &rarr; CRM Organization, Territory &rarr; CRM Territory, Industry Type &rarr; CRM Industry, UTM Source &rarr; CRM Lead Source, Opportunity Lost Reason &rarr; CRM Lost Reason, Item &rarr; CRM Product.</div>"
   },
-
   {
    "fieldname": "lead_tab",
    "fieldtype": "Tab Break",
@@ -122,11 +144,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Lead</b> &rarr; Frappe CRM <b>CRM Lead</b>. Includes any custom fields installed on Lead. Source <code>name</code>, <code>owner</code>, <code>creation</code> and <code>modified</code> are preserved on the target row so audit trail and any external references stay valid.</div>"
   },
   {
+   "default": "CRM Lead",
    "fieldname": "target_lead",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Lead"
+   "read_only": 1
   },
   {
    "fieldname": "lead_count",
@@ -142,11 +164,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.lead_locked",
    "fieldname": "lead_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.lead_locked"
+   "read_only": 1
   },
   {
    "fieldname": "lead_mapped_meta",
@@ -168,24 +190,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.lead_locked",
    "fieldname": "lead_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Lead",
-   "depends_on": "eval:!doc.lead_locked"
+   "label": "Lock & Freeze Lead"
   },
   {
+   "depends_on": "eval:doc.lead_locked",
    "fieldname": "lead_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Lead",
-   "depends_on": "eval:doc.lead_locked"
+   "label": "Unlock Lead"
   },
   {
+   "depends_on": "eval:doc.lead_locked",
    "fieldname": "migrate_lead_btn",
    "fieldtype": "Button",
-   "label": "Migrate Lead → CRM Lead",
-   "depends_on": "eval:doc.lead_locked"
+   "label": "Migrate Lead \u2192 CRM Lead"
   },
-
   {
    "fieldname": "opportunity_tab",
    "fieldtype": "Tab Break",
@@ -197,11 +218,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Opportunity</b> &rarr; Frappe CRM <b>CRM Deal</b>. The migration step also reshapes child data: <b>Opportunity Item</b> &rarr; <b>CRM Products</b> (auto-creates missing CRM Product entries), <b>contact_person + Contact.links</b> &rarr; <b>CRM Deal.contacts</b>, and <b>lost_reasons</b> Table &rarr; <b>lost_reason</b> Link (with extras appended to <code>lost_notes</code>). The source naming series (e.g. <code>OPP-2024-00001</code>) is preserved on the target so existing external references keep resolving.</div>"
   },
   {
+   "default": "CRM Deal",
    "fieldname": "target_opportunity",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Deal"
+   "read_only": 1
   },
   {
    "fieldname": "opportunity_count",
@@ -217,11 +238,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.opportunity_locked",
    "fieldname": "opportunity_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.opportunity_locked"
+   "read_only": 1
   },
   {
    "fieldname": "opportunity_mapped_meta",
@@ -243,24 +264,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.opportunity_locked",
    "fieldname": "opportunity_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Opportunity",
-   "depends_on": "eval:!doc.opportunity_locked"
+   "label": "Lock & Freeze Opportunity"
   },
   {
+   "depends_on": "eval:doc.opportunity_locked",
    "fieldname": "opportunity_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Opportunity",
-   "depends_on": "eval:doc.opportunity_locked"
+   "label": "Unlock Opportunity"
   },
   {
+   "depends_on": "eval:doc.opportunity_locked",
    "fieldname": "migrate_opportunity_btn",
    "fieldtype": "Button",
-   "label": "Migrate Opportunity → CRM Deal",
-   "depends_on": "eval:doc.opportunity_locked"
+   "label": "Migrate Opportunity \u2192 CRM Deal"
   },
-
   {
    "fieldname": "prospect_tab",
    "fieldtype": "Tab Break",
@@ -272,11 +292,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Prospect</b> &rarr; Frappe CRM <b>CRM Organization</b>. The step also adds new <b>Contact.links</b> rows pointing at the migrated CRM Organization (alongside any existing rows that link to Prospect, so legacy references stay intact). Prospect <code>company_name</code> is the autoname on both sides &mdash; names line up cleanly.</div>"
   },
   {
+   "default": "CRM Organization",
    "fieldname": "target_prospect",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Organization"
+   "read_only": 1
   },
   {
    "fieldname": "prospect_count",
@@ -292,11 +312,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.prospect_locked",
    "fieldname": "prospect_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.prospect_locked"
+   "read_only": 1
   },
   {
    "fieldname": "prospect_mapped_meta",
@@ -318,24 +338,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.prospect_locked",
    "fieldname": "prospect_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Prospect",
-   "depends_on": "eval:!doc.prospect_locked"
+   "label": "Lock & Freeze Prospect"
   },
   {
+   "depends_on": "eval:doc.prospect_locked",
    "fieldname": "prospect_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Prospect",
-   "depends_on": "eval:doc.prospect_locked"
+   "label": "Unlock Prospect"
   },
   {
+   "depends_on": "eval:doc.prospect_locked",
    "fieldname": "migrate_prospect_btn",
    "fieldtype": "Button",
-   "label": "Migrate Prospect → CRM Organization",
-   "depends_on": "eval:doc.prospect_locked"
+   "label": "Migrate Prospect \u2192 CRM Organization"
   },
-
   {
    "fieldname": "territory_tab",
    "fieldtype": "Tab Break",
@@ -347,11 +366,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Territory</b> &rarr; Frappe CRM <b>CRM Territory</b>. Tree structure preserved (<code>parent_territory</code> &rarr; <code>parent_crm_territory</code>). Migrated before Lead/Deal so Link references resolve.</div>"
   },
   {
+   "default": "CRM Territory",
    "fieldname": "target_territory",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Territory"
+   "read_only": 1
   },
   {
    "fieldname": "territory_count",
@@ -367,11 +386,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.territory_locked",
    "fieldname": "territory_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.territory_locked"
+   "read_only": 1
   },
   {
    "fieldname": "territory_mapped_meta",
@@ -393,24 +412,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.territory_locked",
    "fieldname": "territory_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Territory",
-   "depends_on": "eval:!doc.territory_locked"
+   "label": "Lock & Freeze Territory"
   },
   {
+   "depends_on": "eval:doc.territory_locked",
    "fieldname": "territory_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Territory",
-   "depends_on": "eval:doc.territory_locked"
+   "label": "Unlock Territory"
   },
   {
+   "depends_on": "eval:doc.territory_locked",
    "fieldname": "migrate_territory_btn",
    "fieldtype": "Button",
-   "label": "Migrate Territory → CRM Territory",
-   "depends_on": "eval:doc.territory_locked"
+   "label": "Migrate Territory \u2192 CRM Territory"
   },
-
   {
    "fieldname": "industry_type_tab",
    "fieldtype": "Tab Break",
@@ -422,11 +440,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Industry Type</b> &rarr; Frappe CRM <b>CRM Industry</b>. Both use <code>industry</code> as the autoname &mdash; values copy across one-to-one. Migrated before Lead/Deal so industry Link references resolve.</div>"
   },
   {
+   "default": "CRM Industry",
    "fieldname": "target_industry_type",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Industry"
+   "read_only": 1
   },
   {
    "fieldname": "industry_type_count",
@@ -442,11 +460,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.industry_type_locked",
    "fieldname": "industry_type_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.industry_type_locked"
+   "read_only": 1
   },
   {
    "fieldname": "industry_type_mapped_meta",
@@ -468,24 +486,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.industry_type_locked",
    "fieldname": "industry_type_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Industry Type",
-   "depends_on": "eval:!doc.industry_type_locked"
+   "label": "Lock & Freeze Industry Type"
   },
   {
+   "depends_on": "eval:doc.industry_type_locked",
    "fieldname": "industry_type_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Industry Type",
-   "depends_on": "eval:doc.industry_type_locked"
+   "label": "Unlock Industry Type"
   },
   {
+   "depends_on": "eval:doc.industry_type_locked",
    "fieldname": "migrate_industry_type_btn",
    "fieldtype": "Button",
-   "label": "Migrate Industry Type → CRM Industry",
-   "depends_on": "eval:doc.industry_type_locked"
+   "label": "Migrate Industry Type \u2192 CRM Industry"
   },
-
   {
    "fieldname": "utm_source_tab",
    "fieldtype": "Tab Break",
@@ -497,11 +514,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>UTM Source</b> &rarr; Frappe CRM <b>CRM Lead Source</b>. UTM Source uses prompt autoname (name = source value), so source-name preservation copies the value cleanly. Native source columns like <code>slug</code> and <code>description</code> have no CRM equivalent &mdash; mark them Skip.</div>"
   },
   {
+   "default": "CRM Lead Source",
    "fieldname": "target_utm_source",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Lead Source"
+   "read_only": 1
   },
   {
    "fieldname": "utm_source_count",
@@ -517,11 +534,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.utm_source_locked",
    "fieldname": "utm_source_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.utm_source_locked"
+   "read_only": 1
   },
   {
    "fieldname": "utm_source_mapped_meta",
@@ -543,24 +560,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.utm_source_locked",
    "fieldname": "utm_source_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze UTM Source",
-   "depends_on": "eval:!doc.utm_source_locked"
+   "label": "Lock & Freeze UTM Source"
   },
   {
+   "depends_on": "eval:doc.utm_source_locked",
    "fieldname": "utm_source_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock UTM Source",
-   "depends_on": "eval:doc.utm_source_locked"
+   "label": "Unlock UTM Source"
   },
   {
+   "depends_on": "eval:doc.utm_source_locked",
    "fieldname": "migrate_utm_source_btn",
    "fieldtype": "Button",
-   "label": "Migrate UTM Source → CRM Lead Source",
-   "depends_on": "eval:doc.utm_source_locked"
+   "label": "Migrate UTM Source \u2192 CRM Lead Source"
   },
-
   {
    "fieldname": "opportunity_lost_reason_tab",
    "fieldtype": "Tab Break",
@@ -572,11 +588,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Opportunity Lost Reason</b> &rarr; Frappe CRM <b>CRM Lost Reason</b>. Single field <code>lost_reason</code> on both sides. Even if you mark this Skip during lock, the Opportunity reshape step (Phase 3) auto-creates any missing CRM Lost Reason on demand.</div>"
   },
   {
+   "default": "CRM Lost Reason",
    "fieldname": "target_opportunity_lost_reason",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Lost Reason"
+   "read_only": 1
   },
   {
    "fieldname": "opportunity_lost_reason_count",
@@ -592,11 +608,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.opportunity_lost_reason_locked",
    "fieldname": "opportunity_lost_reason_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.opportunity_lost_reason_locked"
+   "read_only": 1
   },
   {
    "fieldname": "opportunity_lost_reason_mapped_meta",
@@ -618,24 +634,23 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.opportunity_lost_reason_locked",
    "fieldname": "opportunity_lost_reason_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Opportunity Lost Reason",
-   "depends_on": "eval:!doc.opportunity_lost_reason_locked"
+   "label": "Lock & Freeze Opportunity Lost Reason"
   },
   {
+   "depends_on": "eval:doc.opportunity_lost_reason_locked",
    "fieldname": "opportunity_lost_reason_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Opportunity Lost Reason",
-   "depends_on": "eval:doc.opportunity_lost_reason_locked"
+   "label": "Unlock Opportunity Lost Reason"
   },
   {
+   "depends_on": "eval:doc.opportunity_lost_reason_locked",
    "fieldname": "migrate_opportunity_lost_reason_btn",
    "fieldtype": "Button",
-   "label": "Migrate Opportunity Lost Reason → CRM Lost Reason",
-   "depends_on": "eval:doc.opportunity_lost_reason_locked"
+   "label": "Migrate Opportunity Lost Reason \u2192 CRM Lost Reason"
   },
-
   {
    "fieldname": "item_tab",
    "fieldtype": "Tab Break",
@@ -647,11 +662,11 @@
    "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Item</b> &rarr; Frappe CRM <b>CRM Product</b>. ERPNext Item has many ERP-only fields (<code>uom</code>, <code>brand</code>, <code>item_group</code>, <code>base_rate</code>, &hellip;) that have no candidate on CRM Product &mdash; mark those Skip. The Opportunity Items reshape (Phase 3) auto-creates any missing CRM Product on demand, so even a fully-Skipped Item tab is safe.</div>"
   },
   {
+   "default": "CRM Product",
    "fieldname": "target_item",
    "fieldtype": "Data",
    "label": "Target DocType",
-   "read_only": 1,
-   "default": "CRM Product"
+   "read_only": 1
   },
   {
    "fieldname": "item_count",
@@ -667,11 +682,11 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.item_locked",
    "fieldname": "item_locked_on",
    "fieldtype": "Datetime",
    "label": "Locked On",
-   "read_only": 1,
-   "depends_on": "eval:doc.item_locked"
+   "read_only": 1
   },
   {
    "fieldname": "item_mapped_meta",
@@ -693,29 +708,123 @@
    "options": "CRM Migration Field Row"
   },
   {
+   "depends_on": "eval:!doc.item_locked",
    "fieldname": "item_lock_btn",
    "fieldtype": "Button",
-   "label": "Lock & Freeze Item",
-   "depends_on": "eval:!doc.item_locked"
+   "label": "Lock & Freeze Item"
   },
   {
+   "depends_on": "eval:doc.item_locked",
    "fieldname": "item_unlock_btn",
    "fieldtype": "Button",
-   "label": "Unlock Item",
-   "depends_on": "eval:doc.item_locked"
+   "label": "Unlock Item"
   },
   {
+   "depends_on": "eval:doc.item_locked",
    "fieldname": "migrate_item_btn",
    "fieldtype": "Button",
-   "label": "Migrate Item → CRM Product",
-   "depends_on": "eval:doc.item_locked"
+   "label": "Migrate Item \u2192 CRM Product"
+  },
+  {
+   "fieldname": "column_break_sxwc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_jehu",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_vltv",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "opportunity_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "opportunity_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "opportunity_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "prospect_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "prospect_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "prospect_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "territory_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "territory_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "territory_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "industry_type_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "industry_type_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "industry_type_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "utm_source_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "utm_source_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "utm_source_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "opportunity_lost_reason_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "opportunity_lost_reason_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "opportunity_lost_reason_section_mapping",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "item_section_header",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "item_column_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "item_section_mapping",
+   "fieldtype": "Section Break"
   }
  ],
- "index_web_pages_for_search": 0,
- "is_virtual": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-05-06 12:50:00.000000",
+ "modified": "2026-05-07 16:52:01.466517",
  "modified_by": "Administrator",
  "module": "Migrator",
  "name": "CRM Migration Settings",
@@ -731,6 +840,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

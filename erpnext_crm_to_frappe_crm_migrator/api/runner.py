@@ -29,6 +29,7 @@ from frappe import _
 from frappe.utils import now_datetime
 
 from erpnext_crm_to_frappe_crm_migrator.api import activity, reshape
+from erpnext_crm_to_frappe_crm_migrator.api.mapping import DYNAMIC_LINK_ROUTES
 from erpnext_crm_to_frappe_crm_migrator.mapping.registry import (
 	REVERSE_DOCTYPE_MAP,
 	SOURCE_DOCTYPES,
@@ -376,6 +377,111 @@ def _execute_activity_run(run_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Customer → Prospect bridge for Opportunity-from-Customer rows
+# ---------------------------------------------------------------------------
+
+def _ensure_customer_prospects(source_doctype: str) -> dict[str, str]:
+	"""For Opportunity rows where `opportunity_from = 'Customer'`, ensure
+	a Prospect exists for each referenced Customer (creating one from
+	Customer data if missing). Also creates the matching CRM Organization
+	since the Prospect step has already run by the time we reach
+	Opportunity in the dependency order.
+
+	Returns `{customer_name: prospect_name}` — the chunk loop rewrites
+	`Opportunity.party_name` from Customer.name to Prospect.name so the
+	dynamic-link routing writes a valid Organization reference on
+	CRM Deal.
+	"""
+	if source_doctype != "Opportunity":
+		return {}
+	if not frappe.db.exists("DocType", "Customer"):
+		return {}
+
+	customer_ids = frappe.db.sql_list(
+		"""
+		SELECT DISTINCT party_name FROM `tabOpportunity`
+		WHERE opportunity_from = 'Customer' AND party_name IS NOT NULL AND party_name != ''
+		"""
+	)
+	if not customer_ids:
+		return {}
+
+	customers = frappe.db.sql(
+		"""
+		SELECT name, customer_name, owner, creation, modified, modified_by
+		FROM `tabCustomer`
+		WHERE name IN %(ids)s
+		""",
+		{"ids": tuple(customer_ids)},
+		as_dict=True,
+	)
+	if not customers:
+		return {}
+
+	existing_prospects = set(frappe.db.sql_list("SELECT name FROM `tabProspect`"))
+	existing_orgs = set(frappe.db.sql_list("SELECT name FROM `tabCRM Organization`"))
+
+	translation: dict[str, str] = {}
+	prospects_to_insert: list[tuple] = []
+	orgs_to_insert: list[tuple] = []
+
+	for cust in customers:
+		# Prospect.autoname = field:company_name → name = company_name.
+		# Prefer the human-readable customer_name; fall back to Customer.name
+		# if the field is empty so a CRM Organization always lands.
+		prospect_name = cust["customer_name"] or cust["name"]
+		translation[cust["name"]] = prospect_name
+
+		if prospect_name not in existing_prospects:
+			prospects_to_insert.append((
+				prospect_name,
+				cust["owner"],
+				cust["creation"],
+				cust["modified"],
+				cust["modified_by"],
+				0,
+				prospect_name,
+			))
+			existing_prospects.add(prospect_name)
+
+		if prospect_name not in existing_orgs:
+			orgs_to_insert.append((
+				prospect_name,
+				cust["owner"],
+				cust["creation"],
+				cust["modified"],
+				cust["modified_by"],
+				0,
+				prospect_name,
+			))
+			existing_orgs.add(prospect_name)
+
+	if prospects_to_insert:
+		frappe.db.bulk_insert(
+			"Prospect",
+			fields=[
+				"name", "owner", "creation", "modified", "modified_by",
+				"docstatus", "company_name",
+			],
+			values=prospects_to_insert,
+			ignore_duplicates=True,
+		)
+	if orgs_to_insert:
+		frappe.db.bulk_insert(
+			"CRM Organization",
+			fields=[
+				"name", "owner", "creation", "modified", "modified_by",
+				"docstatus", "organization_name",
+			],
+			values=orgs_to_insert,
+			ignore_duplicates=True,
+		)
+
+	frappe.db.commit()
+	return translation
+
+
+# ---------------------------------------------------------------------------
 # per-doctype migration step
 # ---------------------------------------------------------------------------
 
@@ -442,8 +548,25 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	if target_meta.has_field("naming_series") and "naming_series" not in target_cols:
 		target_cols.append("naming_series")
 
+	# Dynamic-Link source fields (e.g. Opportunity.party_name) route to
+	# different target columns at write time. Make sure every column the
+	# router could touch is in the column set so values aren't dropped
+	# during the tuple build in _build_target_row.
+	for (src_dt, _src_field), rule in DYNAMIC_LINK_ROUTES.items():
+		if src_dt != source_doctype:
+			continue
+		for tgt_col in (*rule["routes"].values(), rule["default_target"]):
+			if tgt_col not in target_cols and target_meta.has_field(tgt_col):
+				target_cols.append(tgt_col)
+
 	# A reverse map src→tgt (for this doctype only) used during preprocess.
 	src_to_tgt = {src: tgt for src, tgt in field_pairs}
+
+	# Customer-from Opportunity bridge: ensure Prospect + CRM Organization
+	# exist for every Customer referenced by an Opportunity. Returns a
+	# translation map used in the chunk loop to rewrite party_name from
+	# Customer.name to Prospect.name (= Customer.customer_name).
+	customer_to_prospect = _ensure_customer_prospects(source_doctype)
 
 	# Read source rows in chunks via raw SQL — guarantees we see every
 	# column (including `_user_tags`, `_assign`, etc.) regardless of
@@ -473,11 +596,24 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 		values: list[tuple] = []
 		for src_row in rows:
 			try:
+				# Customer-from Opportunity: rewrite party_name to the
+				# Prospect name that _ensure_customer_prospects materialised
+				# so the dynamic-link routing writes a valid Organization
+				# reference on CRM Deal.
+				if (
+					customer_to_prospect
+					and src_row.get("opportunity_from") == "Customer"
+				):
+					translated = customer_to_prospect.get(src_row.get("party_name"))
+					if translated:
+						src_row["party_name"] = translated
+
 				out = _build_target_row(
 					src_row,
 					src_to_tgt,
 					target_cols,
 					target_doctype,
+					source_doctype,
 				)
 				values.append(out)
 			except Exception as e:
@@ -546,6 +682,7 @@ def _build_target_row(
 	src_to_tgt: dict,
 	target_cols: list[str],
 	target_doctype: str,
+	source_doctype: str,
 ) -> tuple:
 	"""Compute a tuple of values matching `target_cols` order for one row."""
 	out: dict[str, object] = {}
@@ -570,6 +707,26 @@ def _build_target_row(
 	# just here to satisfy NOT NULL on targets that have the column.
 	if "naming_series" in target_cols and not out.get("naming_series"):
 		out["naming_series"] = src_row.get("naming_series") or ""
+
+	# 5. Dynamic-Link routing — override the static map for fields whose
+	# target column depends on a controller field (e.g. Opportunity's
+	# party_name lands on CRM Deal.lead when opportunity_from='Lead' and
+	# CRM Deal.organization when ='Prospect').
+	for (src_dt, src_field), rule in DYNAMIC_LINK_ROUTES.items():
+		if src_dt != source_doctype:
+			continue
+		controller_value = src_row.get(rule["controller_field"])
+		value = src_row.get(src_field)
+		# Clear every column this rule could touch so the static map
+		# value (e.g. organization=party_name) doesn't linger when the
+		# controller routes to a different column.
+		for col in (*rule["routes"].values(), rule["default_target"]):
+			if col in target_cols:
+				out[col] = None
+		# Pick the right column for this row.
+		chosen = rule["routes"].get(controller_value, rule["default_target"])
+		if chosen in target_cols and value:
+			out[chosen] = value
 
 	# Build the tuple in target_cols order. None for any column we didn't
 	# populate — the database default takes over (typically NULL).
