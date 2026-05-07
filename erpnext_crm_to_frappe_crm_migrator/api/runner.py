@@ -314,6 +314,59 @@ def _run_activity_phase(run) -> tuple[bool, bool]:
 
 
 @frappe.whitelist()
+def default_setup_and_run() -> dict:
+	"""One-click default migration:
+
+	1. Refresh diff for every unlocked tab (rebuilds the editable table
+	   with the current source meta).
+	2. Mark every blank-action row in every unlocked tab as Skip.
+	3. Lock every unlocked tab into CRM Migration Field Map.
+	4. Enqueue a full-scope migration run (all 8 source steps + activity
+	   rewrite).
+
+	Tabs that are already locked are preserved untouched. Useful for
+	users who want sane defaults without per-row review.
+	"""
+	from erpnext_crm_to_frappe_crm_migrator.api.mapping import (
+		_settings_field_prefix,
+		lock_doctype,
+		mark_all_as_skip,
+		refresh_diff,
+	)
+
+	frappe.has_permission(SETTINGS_DOCTYPE, "write", throw=True)
+	frappe.has_permission(RUN_DOCTYPE, "create", throw=True)
+
+	# Step 1: refresh
+	refresh_diff()
+
+	# Step 2 + 3: per-tab skip-blanks then lock, only on unlocked tabs.
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	locked_now = 0
+	already_locked = 0
+	for s in SOURCE_DOCTYPES:
+		prefix = _settings_field_prefix(s)
+		# Re-read each loop in case lock_doctype mutated state
+		settings.reload()
+		if settings.get(f"{prefix}_locked"):
+			already_locked += 1
+			continue
+		mark_all_as_skip(s)
+		lock_doctype(s)
+		locked_now += 1
+
+	# Step 4: full-scope migration (this also runs Phase 4 activity)
+	run_result = run_migration(source_doctype=None)
+
+	return {
+		"ok": True,
+		"locked_now": locked_now,
+		"already_locked": already_locked,
+		"run": run_result.get("run"),
+	}
+
+
+@frappe.whitelist()
 def run_activity_only() -> dict:
 	"""Whitelisted entry for the standalone 'Migrate Activity Records'
 	button. Enqueues a Run that only does Phase 4. Requires every tab
@@ -658,9 +711,11 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 		frappe.db.commit()
 		offset += CHUNK_SIZE
 
-	# Re-anchor shared-schema child rows (e.g. tabCRM Status Change Log).
+	# Re-anchor shared-schema child rows (e.g. tabCRM Status Change Log)
+	# via meta inspection — Table fields don't appear in the locked
+	# field map anymore, so we discover them by walking source meta.
 	child_reanchored = _reanchor_shared_children(
-		source_doctype, target_doctype, field_pairs, target_meta
+		source_doctype, target_doctype, target_meta
 	)
 
 	return {
@@ -697,8 +752,20 @@ def _build_target_row(
 		if f in target_cols:
 			out[f] = src_row.get(f)
 
-	# 3. mapped fields — the locked map drives the renames
+	# 3. mapped fields — the locked map drives the renames. Dynamic
+	# Link source fields are deliberately skipped here so they don't
+	# fight other source fields that legitimately map to the same
+	# target column (e.g. a custom field on Opportunity → CRM Deal
+	# organization). Step 5 is the sole writer for dynamic-link
+	# values.
+	dynamic_sources = {
+		src_field
+		for (src_dt, src_field) in DYNAMIC_LINK_ROUTES
+		if src_dt == source_doctype
+	}
 	for src, tgt in src_to_tgt.items():
+		if src in dynamic_sources:
+			continue
 		if tgt not in target_cols:
 			continue
 		out[tgt] = src_row.get(src)
@@ -708,22 +775,17 @@ def _build_target_row(
 	if "naming_series" in target_cols and not out.get("naming_series"):
 		out["naming_series"] = src_row.get("naming_series") or ""
 
-	# 5. Dynamic-Link routing — override the static map for fields whose
-	# target column depends on a controller field (e.g. Opportunity's
-	# party_name lands on CRM Deal.lead when opportunity_from='Lead' and
-	# CRM Deal.organization when ='Prospect').
+	# 5. Dynamic-Link routing — write the source value into the column
+	# chosen by the controller field (e.g. Opportunity's party_name
+	# lands on CRM Deal.lead when opportunity_from='Lead' and on
+	# CRM Deal.organization when ='Prospect'). The other rule columns
+	# are left with whatever step 3 wrote — so a custom field that
+	# maps to organization survives in the from='Lead' case.
 	for (src_dt, src_field), rule in DYNAMIC_LINK_ROUTES.items():
 		if src_dt != source_doctype:
 			continue
 		controller_value = src_row.get(rule["controller_field"])
 		value = src_row.get(src_field)
-		# Clear every column this rule could touch so the static map
-		# value (e.g. organization=party_name) doesn't linger when the
-		# controller routes to a different column.
-		for col in (*rule["routes"].values(), rule["default_target"]):
-			if col in target_cols:
-				out[col] = None
-		# Pick the right column for this row.
 		chosen = rule["routes"].get(controller_value, rule["default_target"])
 		if chosen in target_cols and value:
 			out[chosen] = value
@@ -771,40 +833,43 @@ def _column_exists(doctype: str, column: str) -> bool:
 def _reanchor_shared_children(
 	source_doctype: str,
 	target_doctype: str,
-	field_pairs: list[tuple[str, str]],
 	target_meta,
 ) -> int:
 	"""Rewrite parenttype/parentfield on child rows whose child doctype is
 	identical on both source and target meta.
 
-	Only Table fields that point at the same child DocType on both sides
-	count. Schema-reshape children (where the child doctype itself changes)
-	are Phase 3.
+	Discovery is via meta inspection — we don't read the locked field
+	map for this. Table fields are deliberately hidden from the diff
+	UI (they aren't column-mapped); shared-schema Tables still need
+	re-anchoring, so we walk source meta and match every Table field
+	whose name + options align with a Table on target meta. Schema-
+	reshape children (where the child doctype itself changes) are
+	Phase 3 territory and never enter this loop.
 
 	Returns the total number of child rows updated across all eligible
 	child doctypes.
 	"""
 	source_meta = frappe.get_meta(source_doctype)
 	total = 0
-	seen: set[tuple[str, str, str]] = set()
+	seen: set[tuple[str, str]] = set()
 
-	for src_field, tgt_field in field_pairs:
-		src_df = source_meta.get_field(src_field)
-		tgt_df = target_meta.get_field(tgt_field)
-		if src_df is None or tgt_df is None:
-			continue
+	for src_df in source_meta.fields:
 		if src_df.fieldtype not in ("Table", "Table MultiSelect"):
 			continue
-		if tgt_df.fieldtype not in ("Table", "Table MultiSelect"):
+		if not src_df.options:
 			continue
-		if (src_df.options or "") != (tgt_df.options or ""):
+		# Match a same-name Table field on target with same child doctype.
+		tgt_df = target_meta.get_field(src_df.fieldname)
+		if tgt_df is None or tgt_df.fieldtype != src_df.fieldtype:
+			continue
+		if (tgt_df.options or "") != (src_df.options or ""):
 			# different child doctype → schema reshape, Phase 3
 			continue
 		child_dt = src_df.options
-		if not child_dt:
-			continue
+		src_field = src_df.fieldname
+		tgt_field = src_df.fieldname  # same name
 
-		key = (child_dt, src_field, tgt_field)
+		key = (child_dt, src_field)
 		if key in seen:
 			continue
 		seen.add(key)

@@ -47,7 +47,6 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"source": "utm_source",
 	"status": "sales_stage",
 	"organization_name": "customer_name",
-	"mobile_no": "whatsapp",
 	"exchange_rate": "conversion_rate",
 	"probability": "probability",
 	"currency": "currency",

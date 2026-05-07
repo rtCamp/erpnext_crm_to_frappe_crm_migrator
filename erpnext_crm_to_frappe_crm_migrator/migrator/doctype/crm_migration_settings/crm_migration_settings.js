@@ -59,6 +59,9 @@ function render_mapped_summary(frm, source_doctype) {
 	}
 
 	const with_risk = mapped.filter((r) => r.risk).length;
+	// Dark amber for warnings — Bootstrap's text-warning is too pale on
+	// light backgrounds to read at small sizes.
+	const WARN_STYLE = "color:#a04000;font-weight:500";
 	const rows = mapped
 		.map((r) => {
 			const tgt = `${escape_html(r.source_field)} → <code>${escape_html(r.target_field)}</code>`;
@@ -66,7 +69,7 @@ function render_mapped_summary(frm, source_doctype) {
 				? ` <span class="badge badge-info" style="font-size:10px">custom</span>`
 				: "";
 			const risk = r.risk
-				? `<br><span class="text-warning" style="font-size:11px">⚠ ${escape_html(r.risk)}</span>`
+				? `<br><span style="${WARN_STYLE};font-size:11px">⚠ ${escape_html(r.risk)}</span>`
 				: "";
 			return `<li>${tgt}${ctype}${risk}</li>`;
 		})
@@ -77,7 +80,7 @@ function render_mapped_summary(frm, source_doctype) {
 		__("auto-mapped to") +
 		` <code>${escape_html(target)}</code>` +
 		(with_risk
-			? ` &middot; <span class="text-warning">${with_risk} ${__("with type-mismatch warnings")}</span>`
+			? ` &middot; <span style="${WARN_STYLE}">${with_risk} ${__("with type-mismatch warnings")}</span>`
 			: "");
 
 	wrapper.html(
@@ -104,7 +107,17 @@ function apply_target_field_options(frm) {
 function lock_one(frm, source_doctype) {
 	frappe.confirm(
 		__("Freeze the {0} mapping into CRM Migration Field Map? Any previously locked rows for {0} are replaced.", [source_doctype]),
-		() => {
+		async () => {
+			// If the user edited the table (set target_field, flipped action,
+			// etc.) without saving, persist it now — the server reads from
+			// the DB so unsaved grid mutations would otherwise be lost.
+			if (frm.is_dirty()) {
+				try {
+					await frm.save();
+				} catch (e) {
+					return;  // save error already shown by Frappe
+				}
+			}
 			frappe.call({
 				method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.lock_doctype",
 				args: { source_doctype },
@@ -164,7 +177,11 @@ function start_run(frm, source_doctype) {
 
 frappe.ui.form.on("CRM Migration Settings", {
 	refresh(frm) {
-		frm.disable_save();
+		// Save IS allowed — users edit target_field / action in the
+		// per-tab tables and need to persist those edits (Ctrl+S,
+		// standard Save toolbar). Lock & Freeze also auto-saves a dirty
+		// form before calling the lock endpoint so casual users don't
+		// have to remember.
 
 		// --- Refresh Diff (skips locked tabs server-side) ---
 		frm.add_custom_button(__("Refresh Diff"), () => {
@@ -197,10 +214,43 @@ frappe.ui.form.on("CRM Migration Settings", {
 			});
 		}, __("Mapping"));
 
+		// --- Default: Skip All & Migrate (always visible — does locking too) ---
+		frm.add_custom_button(__("Default: Skip All & Migrate"), () => {
+			frappe.confirm(
+				__(
+					"This will: <ol><li>Refresh the diff for every unlocked tab</li>" +
+					"<li>Mark every unmapped field as <b>Skip</b></li>" +
+					"<li>Lock every unlocked tab</li>" +
+					"<li>Run the full migration in the background, including the activity rewrite</li></ol>" +
+					"Already-locked tabs are preserved. Continue?"
+				),
+				() => {
+					frappe.call({
+						method: "erpnext_crm_to_frappe_crm_migrator.api.runner.default_setup_and_run",
+						freeze: true,
+						freeze_message: __("Configuring defaults and enqueuing migration…"),
+						callback(r) {
+							if (!r.message || !r.message.ok) return;
+							const m = r.message;
+							frappe.show_alert({
+								message: __(
+									"Locked {0} tab(s) ({1} were already locked); migration enqueued: {2}",
+									[m.locked_now, m.already_locked, m.run],
+								),
+								indicator: "green",
+							});
+							if (m.run) {
+								frappe.set_route("Form", "CRM Migration Run", m.run);
+							}
+						},
+					});
+				}
+			);
+		}, __("Migration")).addClass("btn-primary");
+
 		// --- Run Migration (top-level): only when ALL tabs are locked ---
 		if (all_locked(frm)) {
-			frm.add_custom_button(__("Run Migration"), () => start_run(frm, null), __("Migration"))
-				.addClass("btn-primary");
+			frm.add_custom_button(__("Run Migration"), () => start_run(frm, null), __("Migration"));
 
 			frm.add_custom_button(__("Migrate Activity Records"), () => {
 				frappe.confirm(

@@ -243,6 +243,14 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 			continue
 		if df.fieldname in ALL_SKIP_FIELDS:
 			continue
+		# Table / Table MultiSelect fields can't be column-mapped to a
+		# single target field. Phase 2's _reanchor_shared_children moves
+		# rows for same-schema Tables (e.g. status_change_log) directly
+		# from source meta; Phase 3 reshape handles structural mismatches
+		# (Opportunity Item → CRM Products, lost_reasons → lost_reason).
+		# Hiding them keeps the diff focused on real column mappings.
+		if df.fieldtype in ("Table", "Table MultiSelect"):
+			continue
 		rows.append(_build_row_for_field(df, source_doctype, target_doctype, suggestions))
 
 	# Two source fields cannot legitimately write to the same target
@@ -251,9 +259,17 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 	# via the registry over a row that came from same-name fallback;
 	# the registry encodes intentional cross-system rename rules and
 	# should always win over an accidental fieldname collision.
+	#
+	# Dynamic Link source fields (e.g. Opportunity.party_name) are
+	# excluded from this check — they're runtime-routed by the runner
+	# and only write to their nominal target some of the time, so
+	# they don't actually block another source from also claiming the
+	# column.
 	target_to_candidates: dict[str, list[dict]] = defaultdict(list)
 	for row in rows:
 		if row["action"] != "Map" or not row["target_field"]:
+			continue
+		if (source_doctype, row["source_field"]) in DYNAMIC_LINK_ROUTES:
 			continue
 		target_to_candidates[row["target_field"]].append(row)
 
@@ -402,7 +418,9 @@ def lock_doctype(source_doctype: str) -> dict:
 
 	# 1b. Validate — two source fields can't write to the same target.
 	# Walk both the JSON-side mapped rows and the table-side Map rows
-	# and refuse if any target appears more than once.
+	# and refuse if any target appears more than once. Dynamic Link
+	# source fields are runtime-routed (they don't always write to
+	# their nominal target) and are excluded from this check.
 	target_to_sources: dict[str, list[str]] = {}
 	raw_meta = settings.get(f"{prefix}_mapped_meta") or "[]"
 	try:
@@ -412,11 +430,17 @@ def lock_doctype(source_doctype: str) -> dict:
 	for entry in mapped_meta_preview:
 		src = entry.get("source_field")
 		tgt = entry.get("target_field")
-		if src and tgt:
-			target_to_sources.setdefault(tgt, []).append(src)
+		if not src or not tgt:
+			continue
+		if (source_doctype, src) in DYNAMIC_LINK_ROUTES:
+			continue
+		target_to_sources.setdefault(tgt, []).append(src)
 	for row in rows:
-		if row.action == "Map" and row.target_field:
-			target_to_sources.setdefault(row.target_field, []).append(row.source_field)
+		if row.action != "Map" or not row.target_field:
+			continue
+		if (source_doctype, row.source_field) in DYNAMIC_LINK_ROUTES:
+			continue
+		target_to_sources.setdefault(row.target_field, []).append(row.source_field)
 	conflicts = {tgt: srcs for tgt, srcs in target_to_sources.items() if len(srcs) > 1}
 	if conflicts:
 		lines = [
