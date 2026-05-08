@@ -26,6 +26,8 @@ never stops on a bad row.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import frappe
 from frappe.utils import cstr
 
@@ -316,15 +318,22 @@ def reshape_opportunity_items() -> dict:
 
 def reshape_opportunity_contacts() -> dict:
 	"""Build CRM Deal.contacts child rows from Opportunity.contact_person
-	plus any Contact.links pointing at the Opportunity's party_name (the
-	standard ERPNext Contact ↔ Prospect Dynamic Link pattern).
+	plus any Contact.links pointing at the Opportunity's party (using
+	the standard ERPNext Contact ↔ party Dynamic Link pattern).
+
+	Looks at Contact.links for whichever doctype the Opportunity points
+	at — Prospect, Lead, or Customer — so a from=Lead Opportunity finds
+	Contacts linked to that Lead, a from=Customer Opportunity finds
+	Contacts linked to the Customer, etc. Falls back to the scalar
+	`contact_person` if no linked Contacts are found.
 	"""
 	result = _empty_result()
 
-	# Need both party_name and contact_person from each migrated Opportunity.
+	# Need both party_name, opportunity_from, and contact_person.
 	deals = frappe.db.sql(
 		"""
 		SELECT o.name AS opp_name,
+		       o.opportunity_from AS opportunity_from,
 		       o.party_name AS party_name,
 		       o.contact_person AS contact_person
 		FROM `tabOpportunity` o
@@ -346,29 +355,80 @@ def reshape_opportunity_contacts() -> dict:
 		)
 	)
 
-	# Pre-fetch all Prospect-linked contacts in one query, group by Prospect.
-	prospect_links = frappe.db.sql(
+	# Pre-fetch every Contact.links row for the doctypes Opportunity might
+	# reference, indexed by (link_doctype, link_name) so we can look up a
+	# contact list in O(1) per deal regardless of opportunity_from.
+	link_rows = frappe.db.sql(
 		"""
-		SELECT parent AS contact_name, link_name AS prospect_name
+		SELECT parent AS contact_name, link_doctype, link_name
 		FROM `tabDynamic Link`
 		WHERE parenttype = 'Contact'
 		  AND parentfield = 'links'
-		  AND link_doctype = 'Prospect'
+		  AND link_doctype IN ('Prospect', 'Lead', 'Customer')
 		""",
 		as_dict=True,
 	)
-	contacts_by_prospect: dict[str, list[str]] = {}
-	for r in prospect_links:
-		contacts_by_prospect.setdefault(r["prospect_name"], []).append(r["contact_name"])
+	contacts_by_party: dict[tuple[str, str], list[str]] = defaultdict(list)
+	for r in link_rows:
+		contacts_by_party[(r["link_doctype"], r["link_name"])].append(r["contact_name"])
 
-	# Pre-fetch contact details (full_name, gender) and primary email/phone
-	# for every contact we'll touch.
+	# Email-based fallback for from=Lead opportunities whose Lead has
+	# no Contact.links attached. Lots of customers create Contacts and
+	# Leads with the same email/mobile_no but never wire them up via
+	# Dynamic Link. Pre-fetch a {email_lower → contact_name} map from
+	# Contact Email so we can match in O(1) per deal.
+	contact_by_email: dict[str, str] = {}
+	for r in frappe.db.sql(
+		"""
+		SELECT parent AS contact, LOWER(email_id) AS email
+		FROM `tabContact Email`
+		WHERE email_id IS NOT NULL AND email_id != ''
+		""",
+		as_dict=True,
+	):
+		# First-wins; downstream rules don't dedup so multiple Contacts
+		# sharing an email all collapse to one. Acceptable for migration.
+		contact_by_email.setdefault(r["email"], r["contact"])
+
+	# Lead email lookup — only loaded when there's a from=Lead deal that
+	# might need the email fallback. Lazy via single query keyed by names.
+	from_lead_party_names = {
+		d["party_name"]
+		for d in deals
+		if d["opportunity_from"] == "Lead" and d["party_name"]
+	}
+	lead_email: dict[str, str] = {}
+	if from_lead_party_names:
+		for r in frappe.db.sql(
+			"""
+			SELECT name, LOWER(email_id) AS email
+			FROM `tabLead`
+			WHERE name IN %(names)s
+			  AND email_id IS NOT NULL AND email_id != ''
+			""",
+			{"names": tuple(from_lead_party_names)},
+			as_dict=True,
+		):
+			lead_email[r["name"]] = r["email"]
+
+	# Pre-fetch contact details for every contact we'll touch — this
+	# includes email-fallback contacts that the per-deal loop below
+	# might pick up, so they're already in the details map by then.
 	all_contact_names: set[str] = set()
-	for names in contacts_by_prospect.values():
+	for names in contacts_by_party.values():
 		all_contact_names.update(names)
 	for d in deals:
 		if d["contact_person"]:
 			all_contact_names.add(d["contact_person"])
+		# from=Lead with no link-based contacts and no contact_person:
+		# preview the email-fallback so its details get fetched.
+		if d["opportunity_from"] == "Lead" and d["party_name"]:
+			has_linked = bool(contacts_by_party.get((d["opportunity_from"], d["party_name"])))
+			if not has_linked and not d["contact_person"]:
+				email = lead_email.get(d["party_name"])
+				matched = contact_by_email.get(email) if email else None
+				if matched:
+					all_contact_names.add(matched)
 
 	contact_details: dict[str, dict] = {}
 	if all_contact_names:
@@ -406,18 +466,31 @@ def reshape_opportunity_contacts() -> dict:
 	for d in deals:
 		opp_name = d["opp_name"]
 		party = d["party_name"]
+		ofrom = d["opportunity_from"]
 		primary = d["contact_person"]
 
-		# Source contact list: every Contact whose Contact.links points at
-		# this Prospect first, falling back to the single contact_person
-		# scalar if that lookup is empty.
-		contacts = list(contacts_by_prospect.get(party, []))
+		# Source contact list, in priority order:
+		#   1. Contacts with a Dynamic Link to the Opportunity's party
+		#      (Prospect/Lead/Customer) — the structured ERPNext model.
+		#   2. The scalar contact_person field on the Opportunity.
+		#   3. For from=Lead with neither of the above: a Contact whose
+		#      email matches the Lead's email_id. Lots of customers
+		#      have Contacts and Leads sharing an email but never wire
+		#      them up via Contact.links; this fallback catches them.
+		# The primary is always included regardless of how discovered.
+		contacts: list[str] = []
+		if ofrom and party:
+			contacts = list(contacts_by_party.get((ofrom, party), []))
 		if not contacts and primary:
 			contacts = [primary]
 		elif primary and primary not in contacts:
-			# Make sure primary is included even if Contact.links didn't
-			# capture it.
 			contacts.append(primary)
+
+		if not contacts and ofrom == "Lead":
+			email = lead_email.get(party)
+			matched = contact_by_email.get(email) if email else None
+			if matched:
+				contacts = [matched]
 
 		if not contacts:
 			continue
@@ -640,6 +713,155 @@ def reshape_opportunity_lost_reasons() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 5. Native ERPNext notes (tabCRM Note child rows) → standalone FCRM Note docs
+# ---------------------------------------------------------------------------
+
+# ERPNext Lead/Opportunity/Prospect have a native `notes` Table field
+# pointing at the `CRM Note` child doctype. Frappe CRM uses a different
+# storage model: standalone `FCRM Note` documents with reference_doctype
+# + reference_docname pointing back at CRM Lead/CRM Deal/CRM Organization.
+# This reshape materialises one FCRM Note per source CRM Note row.
+_SOURCE_TO_CRM_TARGET = {
+	"Lead": "CRM Lead",
+	"Opportunity": "CRM Deal",
+	"Prospect": "CRM Organization",
+}
+
+
+def _derive_note_title(custom_title: str | None, note_html: str | None) -> str:
+	"""Build a usable title for FCRM Note from the source row.
+
+	Prefer `custom_title` if set, else strip HTML from the note body and
+	take the first ~80 chars; fall back to "Note" so the field is never
+	empty (FCRM Note's title is a Data field — empty would render as
+	'Untitled' on the form).
+	"""
+	if custom_title:
+		return custom_title.strip()[:140] or "Note"
+	if not note_html:
+		return "Note"
+	import re
+	text = re.sub(r"<[^>]+>", " ", note_html)
+	text = re.sub(r"\s+", " ", text).strip()
+	return text[:80] or "Note"
+
+
+_MIGRATED_NOTE_NAME_PREFIX = "mig-note-"
+
+
+def reshape_notes(source_doctype: str) -> dict:
+	"""Convert ERPNext native CRM Note children under one source doctype
+	into standalone FCRM Note documents anchored to the migrated CRM
+	target row.
+
+	Naming: the source `CRM Note` doctype uses `autoname=autoincrement`
+	(integer names), incompatible with FCRM Note's varchar names. We
+	derive a deterministic string name `mig-note-{source_id}` so re-runs
+	are idempotent (same source row → same FCRM Note) and the reset
+	script can identify migrated rows precisely.
+
+	Source-meta preservation: owner defaults to `added_by`, creation
+	defaults to `added_on`. Phase 4 activity rewrite is irrelevant for
+	these notes (their reference_doctype is set to a CRM target on
+	creation).
+
+	Skipped silently if the migrated parent doesn't exist on the target
+	side yet (e.g. user hasn't run the parent step), so a partial
+	migration doesn't orphan-reference.
+	"""
+	target_doctype = _SOURCE_TO_CRM_TARGET.get(source_doctype)
+	result = _empty_result()
+	if not target_doctype:
+		return result
+	if not frappe.db.exists("DocType", "CRM Note"):
+		return result
+	if not frappe.db.exists("DocType", "FCRM Note"):
+		return result
+
+	rows = frappe.db.sql(
+		"""
+		SELECT name, parent, owner, creation, modified, modified_by, docstatus,
+		       note, added_by, added_on, custom_title
+		FROM `tabCRM Note`
+		WHERE parenttype = %(pt)s
+		  AND parentfield = 'notes'
+		""",
+		{"pt": source_doctype},
+		as_dict=True,
+	)
+	if not rows:
+		return result
+
+	migrated_targets = set(
+		frappe.db.sql_list(f"SELECT name FROM `tab{target_doctype}`")
+	)
+	existing_migrated = set(
+		frappe.db.sql_list(
+			"SELECT name FROM `tabFCRM Note` WHERE name LIKE %s",
+			(f"{_MIGRATED_NOTE_NAME_PREFIX}%",),
+		)
+	)
+
+	target_cols = [
+		"name", "owner", "creation", "modified", "modified_by", "docstatus",
+		"title", "content", "reference_doctype", "reference_docname",
+	]
+	to_insert: list[tuple] = []
+
+	for r in rows:
+		target_name = f"{_MIGRATED_NOTE_NAME_PREFIX}{r['name']}"
+		key = f"FCRMNote:{target_name}"
+		try:
+			if target_name in existing_migrated:
+				result["skipped"] += 1
+				continue
+			if r["parent"] not in migrated_targets:
+				# Parent CRM target row not migrated yet — skip; a
+				# later re-run will catch this once Phase 2 runs.
+				result["skipped"] += 1
+				continue
+
+			owner = r.get("added_by") or r.get("owner") or "Administrator"
+			creation = r.get("added_on") or r.get("creation")
+			modified = r.get("modified") or creation
+			modified_by = owner
+
+			to_insert.append((
+				target_name,
+				owner,
+				creation,
+				modified,
+				modified_by,
+				r.get("docstatus") or 0,
+				_derive_note_title(r.get("custom_title"), r.get("note")),
+				r.get("note") or "",
+				target_doctype,
+				r["parent"],
+			))
+			existing_migrated.add(target_name)
+		except Exception as e:
+			_bump_failed(result, key, e)
+
+	if to_insert:
+		try:
+			for offset in range(0, len(to_insert), CHUNK_SIZE):
+				chunk = to_insert[offset : offset + CHUNK_SIZE]
+				frappe.db.bulk_insert(
+					"FCRM Note",
+					fields=target_cols,
+					values=chunk,
+					ignore_duplicates=True,
+				)
+			result["ok"] += len(to_insert)
+		except Exception as e:
+			result["failed"] += len(to_insert)
+			result["last_error"] = f"bulk_insert FCRM Note: {e}"[:500]
+
+	frappe.db.commit()
+	return result
+
+
+# ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
 
@@ -647,12 +869,16 @@ def reshape_for(source_doctype: str) -> dict:
 	"""Return totals dict for all reshapes applicable to one source step."""
 	totals = _empty_result()
 
-	if source_doctype == "Prospect":
+	if source_doctype == "Lead":
+		_merge(totals, reshape_notes(source_doctype))
+	elif source_doctype == "Prospect":
 		_merge(totals, reshape_prospect_contacts())
+		_merge(totals, reshape_notes(source_doctype))
 	elif source_doctype == "Opportunity":
 		_merge(totals, reshape_opportunity_items())
 		_merge(totals, reshape_opportunity_contacts())
 		_merge(totals, reshape_opportunity_lost_reasons())
+		_merge(totals, reshape_notes(source_doctype))
 
 	return totals
 

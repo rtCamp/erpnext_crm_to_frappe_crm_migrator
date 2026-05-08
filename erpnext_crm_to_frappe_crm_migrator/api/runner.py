@@ -300,11 +300,15 @@ def _run_activity_phase(run) -> tuple[bool, bool]:
 		if result["failed"] > 0:
 			step.status = "Failed"
 			any_failed = True
-		elif result["ok"] == 0:
-			# No rows actually rewritten — every pair either had 0 source
-			# rows or was already done in a previous run.
+		elif result["ok"] == 0 and result["skipped"] == 0:
+			# Nothing was evaluated at all — usually means the activity
+			# doctype isn't installed on this site.
 			step.status = "Skipped"
 		else:
+			# Either rewrote rows, OR evaluated every source pair and
+			# found nothing to rewrite (idempotent re-run, or no
+			# activity records ever pointed at the source doctypes).
+			# Both are success.
 			step.status = "Succeeded"
 		step.completed_at = now_datetime()
 
@@ -427,6 +431,40 @@ def _execute_activity_run(run_name: str) -> None:
 		run.status = "Succeeded"
 	run.save(ignore_permissions=True)
 	frappe.db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Lead → Prospect lookup for Opportunity-from-Lead rows
+# ---------------------------------------------------------------------------
+
+def _build_lead_to_prospect_map(source_doctype: str) -> dict[str, str]:
+	"""Return `{lead_name: prospect_name}` for the Opportunity step.
+
+	When an Opportunity is `opportunity_from='Lead'`, the dynamic-link
+	rule writes `party_name` to `CRM Deal.lead` — but the deal's
+	organization context is the Prospect that owns the Lead. ERPNext
+	stores that link on Prospect's `leads` child table (each row has
+	`parent = Prospect.name`, `lead = Lead.name`). We invert the table
+	once per step and use it during preprocess to populate
+	`CRM Deal.organization` from the Lead's owning Prospect.
+	"""
+	if source_doctype != "Opportunity":
+		return {}
+	if not frappe.db.exists("DocType", "Prospect Lead"):
+		return {}
+	rows = frappe.db.sql(
+		"""
+		SELECT lead, parent
+		FROM `tabProspect Lead`
+		WHERE parenttype = 'Prospect'
+		  AND lead IS NOT NULL AND lead != ''
+		""",
+		as_dict=True,
+	)
+	# If a Lead appears under multiple Prospects, the last one wins —
+	# inversions of one-to-many usually pick last; the user can fix
+	# specific rows post-migration if a different choice is desired.
+	return {r["lead"]: r["parent"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +659,12 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	# Customer.name to Prospect.name (= Customer.customer_name).
 	customer_to_prospect = _ensure_customer_prospects(source_doctype)
 
+	# Lead-from Opportunity organization context: each Lead may be
+	# owned by a Prospect (via Prospect.leads child rows). The map
+	# is consulted in _build_target_row to populate CRM Deal.organization
+	# alongside CRM Deal.lead when opportunity_from='Lead'.
+	lead_to_prospect = _build_lead_to_prospect_map(source_doctype)
+
 	# Read source rows in chunks via raw SQL — guarantees we see every
 	# column (including `_user_tags`, `_assign`, etc.) regardless of
 	# get_all's defaults.
@@ -667,6 +711,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 					target_cols,
 					target_doctype,
 					source_doctype,
+					lead_to_prospect=lead_to_prospect,
 				)
 				values.append(out)
 			except Exception as e:
@@ -738,6 +783,7 @@ def _build_target_row(
 	target_cols: list[str],
 	target_doctype: str,
 	source_doctype: str,
+	lead_to_prospect: dict[str, str] | None = None,
 ) -> tuple:
 	"""Compute a tuple of values matching `target_cols` order for one row."""
 	out: dict[str, object] = {}
@@ -789,6 +835,21 @@ def _build_target_row(
 		chosen = rule["routes"].get(controller_value, rule["default_target"])
 		if chosen in target_cols and value:
 			out[chosen] = value
+
+	# 6. For Opportunity from=Lead: also populate CRM Deal.organization
+	# from the Prospect that owns the Lead (Prospect.leads child rows).
+	# Step 5 routes party_name to lead in this case, leaving organization
+	# blank; this step fills it in from the Lead → Prospect map. Skipped
+	# silently if the Lead has no owning Prospect.
+	if (
+		lead_to_prospect
+		and source_doctype == "Opportunity"
+		and src_row.get("opportunity_from") == "Lead"
+		and "organization" in target_cols
+	):
+		owning_prospect = lead_to_prospect.get(src_row.get("party_name"))
+		if owning_prospect:
+			out["organization"] = owning_prospect
 
 	# Build the tuple in target_cols order. None for any column we didn't
 	# populate — the database default takes over (typically NULL).

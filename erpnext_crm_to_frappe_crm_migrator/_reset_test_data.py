@@ -1,4 +1,4 @@
-"""TEMP — reset all CRM target data + migrator state for re-running migration.
+"""TEMP — reset CRM target data so a migration can be re-run.
 
 Run via:
     bench --site crm.localhost execute \\
@@ -6,14 +6,30 @@ Run via:
 
 DESTRUCTIVE on the target site — wipes every CRM Lead, CRM Deal,
 CRM Organization, CRM Territory, CRM Industry, CRM Lead Source,
-CRM Lost Reason, CRM Product, plus their child rows, plus the
-migrator's locked Field Map and Run history. Source ERPNext doctypes
-(Lead/Opportunity/Prospect/etc.) are NOT touched.
+CRM Lost Reason, CRM Product, plus their child rows, plus
+Phase-3-added Dynamic Links and the CRM Migration Run history.
+
+REVERTS Phase 4 — every activity record (FCRM Note, CRM Task,
+CRM Call Log, CRM Notification, Comment, Communication, File, ToDo)
+whose reference_doctype-equivalent field points at a CRM target
+doctype is rewritten back to its ERPNext source counterpart, so the
+next migration run has source-pointing rows to rewrite again.
+
+PRESERVED (so the user's mapping work survives across reset cycles):
+  - CRM Migration Field Map rows (the locked mapping output)
+  - Per-tab editable table, JSON mapped_meta, lock state on the
+    CRM Migration Settings Single doc
+
+Source ERPNext doctypes (Lead/Opportunity/Prospect/etc.) are NOT
+touched.
 
 Intended for dev/test cycles only — DO NOT run on production.
 """
 
 import frappe
+
+from erpnext_crm_to_frappe_crm_migrator.api.activity import ACTIVITY_SPECS
+from erpnext_crm_to_frappe_crm_migrator.mapping.registry import REVERSE_DOCTYPE_MAP
 
 # Ordered children-first so foreign-key-style constraints don't bite.
 # (Frappe doesn't actually enforce FK, but ordering keeps logs clean.)
@@ -44,6 +60,39 @@ DYNAMIC_LINK_TARGETS = ["CRM Organization"]
 def reset_all():
 	report: dict[str, int] = {}
 
+	# 0. Revert the Phase 4 activity rewrite — flip reference_doctype
+	# (and friends) back from CRM-side to ERPNext-side so the next
+	# migration run has source-pointing rows to rewrite again. Done
+	# before parent deletion so references stay resolvable to the
+	# still-existing source rows during the rest of the cleanup.
+	for activity_dt, doctype_field, _name_field in ACTIVITY_SPECS:
+		if not frappe.db.exists("DocType", activity_dt):
+			continue
+		for source_dt, target_dt in REVERSE_DOCTYPE_MAP.items():
+			# REVERSE_DOCTYPE_MAP keys are ERPNext source names;
+			# values are CRM target names. We're rewriting target → source.
+			n = frappe.db.count(activity_dt, {doctype_field: target_dt})
+			if not n:
+				continue
+			frappe.db.sql(
+				f"UPDATE `tab{activity_dt}` "
+				f"SET `{doctype_field}` = %s "
+				f"WHERE `{doctype_field}` = %s",
+				(source_dt, target_dt),
+			)
+			report[f"activity {activity_dt}: {target_dt} → {source_dt}"] = n
+
+	# 0b. Delete FCRM Notes that the Phase 3 notes reshape created
+	# (their names carry the `mig-note-` prefix — see reshape_notes).
+	# Re-running the migration recreates them from the source CRM Note
+	# children. This filter is precise — user-created CRM-frontend
+	# FCRM Notes don't carry the prefix and are left alone.
+	if frappe.db.exists("DocType", "FCRM Note"):
+		n = frappe.db.count("FCRM Note", {"name": ["like", "mig-note-%"]})
+		if n:
+			frappe.db.delete("FCRM Note", {"name": ["like", "mig-note-%"]})
+			report["FCRM Note (migrated)"] = n
+
 	# 1. Delete child-table rows belonging to target parents.
 	for child_dt, parent_types in TARGET_CHILDREN:
 		if not frappe.db.exists("DocType", child_dt):
@@ -69,26 +118,15 @@ def reset_all():
 			frappe.db.delete("Dynamic Link", {"link_doctype": link_doctype})
 			report[f"Dynamic Link → {link_doctype}"] = n_before
 
-	# 4. Reset migrator state — Field Map, Run log, per-tab locks.
-	for dt in ("CRM Migration Field Map", "CRM Migration Run Step", "CRM Migration Run"):
+	# 4. Run history only — keep CRM Migration Field Map intact and the
+	# per-tab Settings state untouched so the user's mapping work
+	# survives across reset cycles.
+	for dt in ("CRM Migration Run Step", "CRM Migration Run"):
 		if frappe.db.exists("DocType", dt):
 			n_before = frappe.db.count(dt)
 			if n_before:
 				frappe.db.delete(dt)
 				report[dt] = n_before
-
-	# Unlock every tab on the Settings doc + clear its mapped data.
-	from erpnext_crm_to_frappe_crm_migrator.mapping.registry import SOURCE_DOCTYPES
-	settings = frappe.get_single("CRM Migration Settings")
-	for s in SOURCE_DOCTYPES:
-		prefix = s.lower().replace(" ", "_")
-		settings.set(f"{prefix}_locked", 0)
-		settings.set(f"{prefix}_locked_on", None)
-		settings.set(f"{prefix}_field_mapping", [])
-		settings.set(f"{prefix}_mapped_meta", "[]")
-		settings.set(f"{prefix}_count", 0)
-	settings.save(ignore_permissions=True)
-	report["Settings tabs reset"] = len(SOURCE_DOCTYPES)
 
 	frappe.db.commit()
 
@@ -96,5 +134,7 @@ def reset_all():
 	for k, v in sorted(report.items()):
 		print(f"  {k:40s} {v}")
 	print()
-	print("Next: re-run /app/crm-migration-settings → Refresh Diff → Default: Skip All & Migrate")
+	print("Mapping config preserved. Tabs stay locked; CRM Migration Field Map")
+	print("is intact. Next: /app/crm-migration-settings → Run Migration (or")
+	print("Default: Skip All & Migrate to also (re-)refresh and re-lock).")
 	return {"ok": True, "deleted": report}
