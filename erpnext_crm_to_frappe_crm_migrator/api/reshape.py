@@ -862,6 +862,128 @@ def reshape_notes(source_doctype: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 6. Synthesise ToDo rows from the migrated _assign JSON cache
+# ---------------------------------------------------------------------------
+
+def reshape_assignments(source_doctype: str) -> dict:
+	"""Build ToDo rows on the CRM target side from the `_assign` JSON
+	cache that Phase 2 carried over from the source row.
+
+	Why: the CRM frontend's detail page reads `tabToDo` to render the
+	assignment widget — `_assign` alone is enough for the list view but
+	not for the detail page. On many ERPNext sites the source `_assign`
+	cache was populated without matching ToDo rows (e.g. via direct DB
+	writes), or any source ToDos may have been deleted before
+	migration. Phase 4 only *rewrites* existing ToDos; this reshape
+	*creates* them from the cache so the detail-page widget has data.
+
+	Idempotent: skips when an Open ToDo already exists for the same
+	(reference_type, reference_name, allocated_to) — covers the
+	overlap with Phase 4-rewritten ToDos.
+	"""
+	import json
+
+	target_doctype = _SOURCE_TO_CRM_TARGET.get(source_doctype)
+	result = _empty_result()
+	if not target_doctype:
+		return result
+	if not frappe.db.exists("DocType", "ToDo"):
+		return result
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT name, owner, _assign
+		FROM `tab{target_doctype}`
+		WHERE _assign IS NOT NULL AND _assign != '' AND _assign != '[]'
+		""",
+		as_dict=True,
+	)
+	if not rows:
+		return result
+
+	# Pre-fetch existing Open ToDos for this target doctype, indexed by
+	# (reference_name, allocated_to). The dedup key includes the
+	# allocated user so a doc with multiple assignees gets one ToDo per
+	# user — matching ERPNext's standard model.
+	existing = set(
+		frappe.db.sql(
+			"""
+			SELECT reference_name, allocated_to
+			FROM `tabToDo`
+			WHERE reference_type = %s AND status = 'Open'
+			""",
+			(target_doctype,),
+		)
+	)
+
+	target_cols = [
+		"name", "owner", "creation", "modified", "modified_by", "docstatus",
+		"status", "priority", "date", "allocated_to", "description",
+		"reference_type", "reference_name", "assigned_by",
+	]
+	to_insert: list[tuple] = []
+	now = frappe.utils.now()
+	today = frappe.utils.today()
+	default_description = (
+		"Assignment migrated from ERPNext "
+		f"{source_doctype}"
+	)
+
+	for r in rows:
+		try:
+			assignees = json.loads(r["_assign"])
+		except (json.JSONDecodeError, TypeError):
+			continue
+		if not isinstance(assignees, list):
+			continue
+
+		assigned_by = r.get("owner") or "Administrator"
+
+		for user in assignees:
+			if not user:
+				continue
+			key = (r["name"], user)
+			if key in existing:
+				result["skipped"] += 1
+				continue
+			existing.add(key)
+			to_insert.append((
+				frappe.generate_hash(length=10),
+				assigned_by,        # owner of the ToDo row
+				now,                # creation
+				now,                # modified
+				assigned_by,        # modified_by
+				0,                  # docstatus
+				"Open",             # status
+				"Medium",           # priority
+				today,              # date
+				user,               # allocated_to
+				default_description,
+				target_doctype,     # reference_type
+				r["name"],          # reference_name
+				assigned_by,        # assigned_by
+			))
+
+	if to_insert:
+		try:
+			for offset in range(0, len(to_insert), CHUNK_SIZE):
+				chunk = to_insert[offset : offset + CHUNK_SIZE]
+				frappe.db.bulk_insert(
+					"ToDo",
+					fields=target_cols,
+					values=chunk,
+					ignore_duplicates=True,
+				)
+			result["ok"] += len(to_insert)
+		except Exception as e:
+			result["failed"] += len(to_insert)
+			result["last_error"] = f"bulk_insert ToDo: {e}"[:500]
+
+	frappe.db.commit()
+	return result
+
+
+# ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
 
@@ -871,14 +993,17 @@ def reshape_for(source_doctype: str) -> dict:
 
 	if source_doctype == "Lead":
 		_merge(totals, reshape_notes(source_doctype))
+		_merge(totals, reshape_assignments(source_doctype))
 	elif source_doctype == "Prospect":
 		_merge(totals, reshape_prospect_contacts())
 		_merge(totals, reshape_notes(source_doctype))
+		_merge(totals, reshape_assignments(source_doctype))
 	elif source_doctype == "Opportunity":
 		_merge(totals, reshape_opportunity_items())
 		_merge(totals, reshape_opportunity_contacts())
 		_merge(totals, reshape_opportunity_lost_reasons())
 		_merge(totals, reshape_notes(source_doctype))
+		_merge(totals, reshape_assignments(source_doctype))
 
 	return totals
 

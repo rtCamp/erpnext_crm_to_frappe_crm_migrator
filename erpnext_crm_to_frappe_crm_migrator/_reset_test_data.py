@@ -93,6 +93,22 @@ def reset_all():
 			frappe.db.delete("FCRM Note", {"name": ["like", "mig-note-%"]})
 			report["FCRM Note (migrated)"] = n
 
+	# 0c. Delete ToDos that the Phase 3 assignments reshape synthesised
+	# from the _assign cache (those whose reference_type is a CRM
+	# target). Re-running recreates them.
+	if frappe.db.exists("DocType", "ToDo"):
+		crm_targets = list(REVERSE_DOCTYPE_MAP.values())
+		n = frappe.db.count(
+			"ToDo",
+			{"reference_type": ["in", crm_targets], "status": "Open"},
+		)
+		if n:
+			frappe.db.delete(
+				"ToDo",
+				{"reference_type": ["in", crm_targets], "status": "Open"},
+			)
+			report["ToDo (CRM-side, Open)"] = n
+
 	# 1. Delete child-table rows belonging to target parents.
 	for child_dt, parent_types in TARGET_CHILDREN:
 		if not frappe.db.exists("DocType", child_dt):
