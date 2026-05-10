@@ -984,6 +984,168 @@ def reshape_assignments(source_doctype: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 7. Convert source ToDos into CRM Tasks (non-assignment ToDos only)
+# ---------------------------------------------------------------------------
+
+# Custom field on CRM Task to track which source ToDo each migrated task
+# came from. Lazily installed by reshape_tasks on first run.
+_TASK_MARKER_FIELD = "custom_source_todo"
+
+# Frappe's assignment ToDos use this description format (see
+# frappe/desk/form/assign_to.py:78 — `_("Assignment for {0} {1}")`).
+# We filter them out so basic assignment-only ToDos don't become tasks
+# the user would have to clean up.
+_ASSIGNMENT_DESC_RE = __import__("re").compile(
+	r"^\s*Assignment for \S", flags=__import__("re").IGNORECASE
+)
+
+# Map ERPNext ToDo.status to CRM Task.status.
+_TODO_STATUS_TO_TASK = {
+	"Open": "Todo",
+	"Closed": "Done",
+	"Cancelled": "Canceled",
+}
+
+
+def _ensure_task_marker_field() -> None:
+	"""Install the hidden tracking field on CRM Task if not already present."""
+	if frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": _TASK_MARKER_FIELD}):
+		return
+	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+	create_custom_fields(
+		{
+			"CRM Task": [
+				{
+					"fieldname": _TASK_MARKER_FIELD,
+					"label": "Source ERPNext ToDo",
+					"fieldtype": "Data",
+					"hidden": 1,
+					"no_copy": 1,
+					"read_only": 1,
+					"description": (
+						"ERPNext ToDo.name this CRM Task was migrated from. "
+						"Used by the migrator for idempotency / reset; safe to ignore."
+					),
+				}
+			]
+		},
+		update=True,
+	)
+
+
+def _derive_task_title(description_html: str | None) -> str:
+	"""Pick a usable title from the ToDo description.
+
+	ToDo descriptions are Text Editor (HTML) on modern Frappe. Strip
+	tags, collapse whitespace, take first ~80 chars; fall back to
+	"Task" if blank (CRM Task.title is required).
+	"""
+	if not description_html:
+		return "Task"
+	import re
+	text = re.sub(r"<[^>]+>", " ", description_html)
+	text = re.sub(r"\s+", " ", text).strip()
+	return text[:80] or "Task"
+
+
+def reshape_tasks(source_doctype: str) -> dict:
+	"""Convert ERPNext ToDos that reference one source doctype into
+	CRM Task documents on the migrated CRM target.
+
+	Skips:
+	  - Frappe's auto-assignment ToDos (description matches the
+	    "Assignment for <DocType> <name>" template) — those are handled
+	    by reshape_assignments which synthesises a tabToDo from
+	    `_assign`, not a CRM Task. Treating them as tasks would
+	    duplicate every assignment as a task.
+	  - ToDos that were already converted in a prior run (custom_source_todo
+	    field on CRM Task matches the ToDo.name).
+	  - ToDos whose parent CRM target hasn't been migrated yet.
+
+	Uses get_doc().insert() rather than bulk_insert so CRM Task's
+	`after_insert` hook fires — that hook creates the task's own
+	assignment ToDo (reference_type='CRM Task'), which the CRM
+	frontend's Tasks tab and assignment widget both expect.
+	"""
+	target_doctype = _SOURCE_TO_CRM_TARGET.get(source_doctype)
+	result = _empty_result()
+	if not target_doctype:
+		return result
+	if not frappe.db.exists("DocType", "ToDo") or not frappe.db.exists("DocType", "CRM Task"):
+		return result
+
+	_ensure_task_marker_field()
+
+	# Source ToDos on this doctype.
+	todos = frappe.db.sql(
+		"""
+		SELECT name, owner, creation, modified, modified_by, docstatus,
+		       status, priority, date, allocated_to, description,
+		       reference_type, reference_name, assigned_by
+		FROM `tabToDo`
+		WHERE reference_type = %s
+		""",
+		(source_doctype,),
+		as_dict=True,
+	)
+	if not todos:
+		return result
+
+	migrated_targets = set(
+		frappe.db.sql_list(f"SELECT name FROM `tab{target_doctype}`")
+	)
+	# Already-converted ToDo names (idempotency).
+	already_converted = set(
+		frappe.db.sql_list(
+			f"SELECT `{_TASK_MARKER_FIELD}` FROM `tabCRM Task` "
+			f"WHERE `{_TASK_MARKER_FIELD}` IS NOT NULL"
+		)
+	)
+
+	for t in todos:
+		key = f"ToDo:{t['name']}"
+		try:
+			if str(t["name"]) in already_converted:
+				result["skipped"] += 1
+				continue
+			# Skip auto-assignment ToDos — they're not real tasks.
+			if _ASSIGNMENT_DESC_RE.match(t.get("description") or ""):
+				result["skipped"] += 1
+				continue
+			if t["reference_name"] not in migrated_targets:
+				# Parent CRM target not migrated yet; skip silently.
+				result["skipped"] += 1
+				continue
+
+			task = frappe.get_doc(
+				{
+					"doctype": "CRM Task",
+					"title": _derive_task_title(t.get("description")),
+					"description": t.get("description") or "",
+					"assigned_to": t.get("allocated_to") or None,
+					"status": _TODO_STATUS_TO_TASK.get(t.get("status"), "Todo"),
+					"priority": (t.get("priority") or "Medium").capitalize(),
+					"due_date": t.get("date") or None,
+					"reference_doctype": target_doctype,
+					"reference_docname": t["reference_name"],
+					_TASK_MARKER_FIELD: str(t["name"]),
+				}
+			)
+			# Preserve source meta on the task itself.
+			task.owner = t.get("owner") or "Administrator"
+			task.creation = t.get("creation")
+			task.modified = t.get("modified") or t.get("creation")
+			task.modified_by = t.get("modified_by") or task.owner
+			task.insert(ignore_permissions=True)
+			result["ok"] += 1
+		except Exception as e:
+			_bump_failed(result, key, e)
+
+	frappe.db.commit()
+	return result
+
+
+# ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
 
@@ -994,16 +1156,19 @@ def reshape_for(source_doctype: str) -> dict:
 	if source_doctype == "Lead":
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
+		_merge(totals, reshape_tasks(source_doctype))
 	elif source_doctype == "Prospect":
 		_merge(totals, reshape_prospect_contacts())
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
+		_merge(totals, reshape_tasks(source_doctype))
 	elif source_doctype == "Opportunity":
 		_merge(totals, reshape_opportunity_items())
 		_merge(totals, reshape_opportunity_contacts())
 		_merge(totals, reshape_opportunity_lost_reasons())
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
+		_merge(totals, reshape_tasks(source_doctype))
 
 	return totals
 

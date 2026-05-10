@@ -109,6 +109,19 @@ def reset_all():
 			)
 			report["ToDo (CRM-side, Open)"] = n
 
+	# 0d. Delete CRM Tasks that the Phase 3 tasks reshape created
+	# (those with custom_source_todo set — tracks the source ERPNext
+	# ToDo.name). Re-running recreates them. User-created CRM Tasks
+	# don't carry this marker and are left alone.
+	if (
+		frappe.db.exists("DocType", "CRM Task")
+		and frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"})
+	):
+		n = frappe.db.count("CRM Task", {"custom_source_todo": ["is", "set"]})
+		if n:
+			frappe.db.delete("CRM Task", {"custom_source_todo": ["is", "set"]})
+			report["CRM Task (migrated)"] = n
+
 	# 1. Delete child-table rows belonging to target parents.
 	for child_dt, parent_types in TARGET_CHILDREN:
 		if not frappe.db.exists("DocType", child_dt):
