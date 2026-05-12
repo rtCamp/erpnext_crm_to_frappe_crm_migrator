@@ -33,6 +33,10 @@ CRM_LEAD_TO_LEAD = {
 	"territory": "territory",
 	"industry": "industry",
 	"status": "status",
+	# SLA response tracking — rtcamp's ERPNext-side custom fields land on
+	# native CRM Lead columns instead of being mirrored as customs.
+	"response_by": "custom_last_response_by",
+	"last_responded_on": "custom_last_responded_on",
 }
 LEAD_TO_CRM_LEAD = {v: k for k, v in CRM_LEAD_TO_LEAD.items()}
 
@@ -58,6 +62,10 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"phone": "phone",
 	"job_title": "job_title",
 	"contact_email": "contact_email",
+	# SLA response tracking — rtcamp's ERPNext-side custom fields land on
+	# native CRM Deal columns instead of being mirrored as customs.
+	"response_by": "custom_last_response_by",
+	"last_responded_on": "custom_last_responded_on",
 }
 OPPORTUNITY_TO_CRM_DEAL = {v: k for k, v in CRM_DEAL_TO_OPPORTUNITY.items()}
 
