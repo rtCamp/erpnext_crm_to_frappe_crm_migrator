@@ -686,6 +686,10 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 			)
 		except Exception as e:
 			last_error = f"chunk read at offset {offset}: {e}"
+			frappe.log_error(
+				title=f"Migrator: {source_doctype} chunk read",
+				message=frappe.get_traceback(),
+			)
 			break
 		if not rows:
 			break
@@ -719,6 +723,10 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 				last_error = str(e)[:500]
 				if len(sample_failed) < SAMPLE_FAILED_LIMIT:
 					sample_failed.append(src_row.get("name") or "<unknown>")
+				frappe.log_error(
+					title=f"Migrator: {source_doctype} row {src_row.get('name') or '<unknown>'}",
+					message=frappe.get_traceback(),
+				)
 
 		if values:
 			# Determine which names in this batch already exist, BEFORE the
@@ -752,6 +760,10 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 				last_error = f"bulk_insert chunk at offset {offset}: {e}"
 				for v in values[:SAMPLE_FAILED_LIMIT - len(sample_failed)]:
 					sample_failed.append(v[0])  # name is column 0
+				frappe.log_error(
+					title=f"Migrator: {source_doctype} bulk_insert chunk @ offset {offset}",
+					message=frappe.get_traceback(),
+				)
 
 		frappe.db.commit()
 		offset += CHUNK_SIZE
@@ -891,6 +903,21 @@ def _column_exists(doctype: str, column: str) -> bool:
 # child-row re-anchoring (shared-schema only)
 # ---------------------------------------------------------------------------
 
+# Explicit overrides for the source → target parentfield mapping inside
+# _reanchor_shared_children. Use when the source has an extra Table
+# field (e.g. a custom_ duplicate) that should be merged into the
+# canonical CRM target field instead of being skipped for lack of a
+# same-name match. Keyed by (source_doctype, source_field) → target_field.
+SHARED_CHILD_FIELD_MERGES: dict[tuple[str, str], str] = {
+	# Opportunity has both `status_change_log` (next_crm) and
+	# `custom_stage_change_log` (an extra customisation) — both
+	# pointing at CRM Status Change Log child rows. CRM Deal only has
+	# one canonical `status_change_log` field, so we merge the
+	# stage-log rows into the canonical target.
+	("Opportunity", "custom_stage_change_log"): "status_change_log",
+}
+
+
 def _reanchor_shared_children(
 	source_doctype: str,
 	target_doctype: str,
@@ -907,6 +934,11 @@ def _reanchor_shared_children(
 	reshape children (where the child doctype itself changes) are
 	Phase 3 territory and never enter this loop.
 
+	`SHARED_CHILD_FIELD_MERGES` overrides the default same-name match
+	for cases where a source has an extra Table field that should
+	merge into the canonical target field (e.g.
+	Opportunity.custom_status_change_log → CRM Deal.status_change_log).
+
 	Returns the total number of child rows updated across all eligible
 	child doctypes.
 	"""
@@ -919,8 +951,11 @@ def _reanchor_shared_children(
 			continue
 		if not src_df.options:
 			continue
-		# Match a same-name Table field on target with same child doctype.
-		tgt_df = target_meta.get_field(src_df.fieldname)
+		# Decide which target field this source field re-anchors to:
+		# explicit merge override first, else same-name fallback.
+		merge_target = SHARED_CHILD_FIELD_MERGES.get((source_doctype, src_df.fieldname))
+		tgt_fieldname = merge_target or src_df.fieldname
+		tgt_df = target_meta.get_field(tgt_fieldname)
 		if tgt_df is None or tgt_df.fieldtype != src_df.fieldtype:
 			continue
 		if (tgt_df.options or "") != (src_df.options or ""):
@@ -928,7 +963,7 @@ def _reanchor_shared_children(
 			continue
 		child_dt = src_df.options
 		src_field = src_df.fieldname
-		tgt_field = src_df.fieldname  # same name
+		tgt_field = tgt_fieldname
 
 		key = (child_dt, src_field)
 		if key in seen:

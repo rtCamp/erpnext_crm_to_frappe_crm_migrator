@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "intro_html",
+  "migration_details_html",
   "lead_tab",
   "lead_tab_notes",
   "section_break_vltv",
@@ -585,7 +586,7 @@
   {
    "fieldname": "opportunity_lost_reason_tab_notes",
    "fieldtype": "HTML",
-   "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Opportunity Lost Reason</b> &rarr; Frappe CRM <b>CRM Lost Reason</b>. Single field <code>lost_reason</code> on both sides. Even if you mark this Skip during lock, the Opportunity reshape step (Phase 3) auto-creates any missing CRM Lost Reason on demand.</div>"
+   "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Opportunity Lost Reason</b> &rarr; Frappe CRM <b>CRM Lost Reason</b>. Single field <code>lost_reason</code> on both sides. Even if you mark this Skip during lock, the Opportunity migration auto-creates any missing CRM Lost Reason on demand.</div>"
   },
   {
    "default": "CRM Lost Reason",
@@ -659,7 +660,7 @@
   {
    "fieldname": "item_tab_notes",
    "fieldtype": "HTML",
-   "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Item</b> &rarr; Frappe CRM <b>CRM Product</b>. ERPNext Item has many ERP-only fields (<code>uom</code>, <code>brand</code>, <code>item_group</code>, <code>base_rate</code>, &hellip;) that have no candidate on CRM Product &mdash; mark those Skip. The Opportunity Items reshape (Phase 3) auto-creates any missing CRM Product on demand, so even a fully-Skipped Item tab is safe.</div>"
+   "options": "<div class=\"text-muted\" style=\"padding:6px 0;font-size:12px\">Maps ERPNext <b>Item</b> &rarr; Frappe CRM <b>CRM Product</b>. ERPNext Item has many ERP-only fields (<code>uom</code>, <code>brand</code>, <code>item_group</code>, <code>base_rate</code>, &hellip;) that have no candidate on CRM Product &mdash; mark those Skip. The Opportunity migration auto-creates any missing CRM Product on demand, so even a fully-Skipped Item tab is safe.</div>"
   },
   {
    "default": "CRM Product",
@@ -724,6 +725,11 @@
    "fieldname": "migrate_item_btn",
    "fieldtype": "Button",
    "label": "Migrate Item \u2192 CRM Product"
+  },
+  {
+   "fieldname": "migration_details_html",
+   "fieldtype": "HTML",
+   "label": "Migrator Details"
   },
   {
    "fieldname": "column_break_sxwc",

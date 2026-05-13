@@ -596,3 +596,29 @@ def unlock_doctype(source_doctype: str) -> dict:
 	settings.set(f"{prefix}_locked_on", None)
 	settings.save()
 	return {"ok": True, "source": source_doctype}
+
+
+@frappe.whitelist()
+def get_migrator_details() -> dict:
+	"""Return the activity doctypes the migrator rewrites.
+
+	Powers the Details tab on CRM Migration Settings — gives the user a
+	single reference for which audit-trail / activity records get re-pointed
+	at the migrated CRM doctypes after the core records migration runs.
+
+	ToDo is appended as a synthetic entry because its rewrite is narrowed
+	(only assignment-style ToDos), so it doesn't live in ACTIVITY_SPECS but
+	is part of what the activity step does.
+	"""
+	from erpnext_crm_to_frappe_crm_migrator.api.activity import ACTIVITY_SPECS
+
+	rows = [
+		{"doctype": dt, "field": field_dt, "scope": ""}
+		for (dt, field_dt, _nf) in ACTIVITY_SPECS
+	]
+	rows.append({
+		"doctype": "ToDo",
+		"field": "reference_type",
+		"scope": "assignment-style rows only — content ToDos become CRM Tasks instead",
+	})
+	return {"activity_doctypes": rows}

@@ -167,3 +167,126 @@ def reset_all():
 	print("is intact. Next: /app/crm-migration-settings → Run Migration (or")
 	print("Default: Skip All & Migrate to also (re-)refresh and re-lock).")
 	return {"ok": True, "deleted": report}
+
+
+def reset_deal_only():
+	"""Same shape as `reset_all` but scoped to the CRM Deal pipeline only.
+
+	Reverts CRM Deal activity refs, deletes Opportunity-originated migrated
+	notes/tasks/child rows, and drops every CRM Deal row. CRM Lead /
+	CRM Organization / lookup tables and their activity rewrites are NOT
+	touched. Use to re-test the Opportunity → CRM Deal step in isolation.
+	"""
+	report: dict[str, int] = {}
+
+	# 0. Revert activity refs CRM Deal → Opportunity (the only target/source
+	# pair we care about for an Opportunity-scoped re-run).
+	for activity_dt, doctype_field, _name_field in ACTIVITY_SPECS:
+		if not frappe.db.exists("DocType", activity_dt):
+			continue
+		n = frappe.db.count(activity_dt, {doctype_field: "CRM Deal"})
+		if not n:
+			continue
+		frappe.db.sql(
+			f"UPDATE `tab{activity_dt}` SET `{doctype_field}` = %s WHERE `{doctype_field}` = %s",
+			("Opportunity", "CRM Deal"),
+		)
+		report[f"activity {activity_dt}: CRM Deal → Opportunity"] = n
+
+	# Also revert the ToDo assignment-only rewrite (CRM Deal → Opportunity).
+	if frappe.db.exists("DocType", "ToDo"):
+		n = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabToDo`
+			WHERE reference_type = 'CRM Deal'
+			  AND description LIKE 'Assignment for %%'
+			""",
+		)[0][0]
+		if n:
+			frappe.db.sql(
+				"""
+				UPDATE `tabToDo`
+				SET reference_type = 'Opportunity'
+				WHERE reference_type = 'CRM Deal'
+				  AND description LIKE 'Assignment for %%'
+				""",
+			)
+			report["activity ToDo (assignment): CRM Deal → Opportunity"] = int(n)
+
+	# 0b. Migrated FCRM Notes whose parent is a CRM Deal.
+	if frappe.db.exists("DocType", "FCRM Note"):
+		n = frappe.db.count(
+			"FCRM Note",
+			{"name": ["like", "mig-note-%"], "reference_doctype": "CRM Deal"},
+		)
+		if n:
+			frappe.db.delete(
+				"FCRM Note",
+				{"name": ["like", "mig-note-%"], "reference_doctype": "CRM Deal"},
+			)
+			report["FCRM Note (CRM Deal, migrated)"] = n
+
+	# 0c. Open CRM-side ToDos pointing at CRM Deal (auto-todos from CRM
+	# Task.after_insert + reshape_assignments output).
+	if frappe.db.exists("DocType", "ToDo"):
+		n = frappe.db.count("ToDo", {"reference_type": "CRM Deal", "status": "Open"})
+		if n:
+			frappe.db.delete("ToDo", {"reference_type": "CRM Deal", "status": "Open"})
+			report["ToDo (CRM Deal, Open)"] = n
+
+	# 0d. Migrated CRM Tasks anchored to CRM Deal.
+	if (
+		frappe.db.exists("DocType", "CRM Task")
+		and frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"})
+	):
+		n = frappe.db.count(
+			"CRM Task",
+			{"custom_source_todo": ["is", "set"], "reference_doctype": "CRM Deal"},
+		)
+		if n:
+			frappe.db.delete(
+				"CRM Task",
+				{"custom_source_todo": ["is", "set"], "reference_doctype": "CRM Deal"},
+			)
+			report["CRM Task (CRM Deal, migrated)"] = n
+
+	# 1. Child rows under CRM Deal.
+	deal_children = [
+		"CRM Products",
+		"CRM Contacts",
+		"CRM Status Change Log",
+		"CRM Rolling Response Time",
+	]
+	for child_dt in deal_children:
+		if not frappe.db.exists("DocType", child_dt):
+			continue
+		n = frappe.db.count(child_dt, {"parenttype": "CRM Deal"})
+		if n:
+			frappe.db.delete(child_dt, {"parenttype": "CRM Deal"})
+			report[f"child {child_dt}"] = n
+
+	# 2. CRM Deal parent rows.
+	if frappe.db.exists("DocType", "CRM Deal"):
+		n = frappe.db.count("CRM Deal")
+		if n:
+			frappe.db.delete("CRM Deal")
+			report["CRM Deal"] = n
+
+	# 3. Migration Run history scoped to Opportunity (so the next run is
+	# the only one in the table, easier to read).
+	if frappe.db.exists("DocType", "CRM Migration Run"):
+		runs = frappe.db.sql_list(
+			"SELECT name FROM `tabCRM Migration Run` WHERE scoped_to = 'Opportunity'"
+		)
+		for r in runs:
+			frappe.db.delete("CRM Migration Run Step", {"parent": r})
+			frappe.db.delete("CRM Migration Run", {"name": r})
+		if runs:
+			report["CRM Migration Run (Opportunity)"] = len(runs)
+
+	frappe.db.commit()
+
+	print("=== Deal-only reset complete ===")
+	for k, v in sorted(report.items()):
+		print(f"  {k:40s} {v}")
+	return {"ok": True, "deleted": report}

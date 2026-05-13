@@ -44,6 +44,12 @@ def _bump_failed(result: dict, key: str, error: Exception) -> None:
 	result["last_error"] = str(error)[:500]
 	if len(result["sample_failed"]) < SAMPLE_FAILED_LIMIT:
 		result["sample_failed"].append(key)
+	# Persist the full traceback to the Error Log so the user has more
+	# than the 500-char excerpt on the Run Step row.
+	frappe.log_error(
+		title=f"Migrator reshape: {key}",
+		message=frappe.get_traceback(),
+	)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +137,10 @@ def reshape_prospect_contacts() -> dict:
 			result["last_error"] = f"bulk_insert Dynamic Link: {e}"[:500]
 			for v in to_insert[: SAMPLE_FAILED_LIMIT - len(result["sample_failed"])]:
 				result["sample_failed"].append(f"Contact:{v[1]} → {v[5]}")
+			frappe.log_error(
+				title="Migrator reshape: Prospect contacts bulk_insert",
+				message=frappe.get_traceback(),
+			)
 
 	frappe.db.commit()
 	return result
@@ -307,6 +317,10 @@ def reshape_opportunity_items() -> dict:
 		except Exception as e:
 			result["failed"] += len(to_insert)
 			result["last_error"] = f"bulk_insert CRM Products: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: CRM Products bulk_insert",
+				message=frappe.get_traceback(),
+			)
 
 	frappe.db.commit()
 	return result
@@ -543,6 +557,10 @@ def reshape_opportunity_contacts() -> dict:
 		except Exception as e:
 			result["failed"] += len(to_insert)
 			result["last_error"] = f"bulk_insert CRM Contacts: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: CRM Contacts bulk_insert",
+				message=frappe.get_traceback(),
+			)
 
 	# Backfill CRM Deal.contact scalar where empty
 	for deal_name, primary_contact in scalar_backfills:
@@ -584,6 +602,10 @@ def reshape_opportunity_contacts() -> dict:
 # ---------------------------------------------------------------------------
 
 def _ensure_crm_lost_reason(lost_reason: str, cache: set[str]) -> tuple[bool, str]:
+	if not lost_reason:
+		# Blank Table-MultiSelect row — nothing to ensure. Caller already
+		# filters these out, but be defensive: don't surface as a failure.
+		return False, ""
 	if lost_reason in cache:
 		return False, ""
 	if frappe.db.exists("CRM Lost Reason", lost_reason):
@@ -651,10 +673,15 @@ def reshape_opportunity_lost_reasons() -> dict:
 	if not rows:
 		return result
 
-	# Group by Opportunity name
+	# Group by Opportunity name, dropping empty values — Table MultiSelect
+	# tolerates blank rows (no selection made), but those are nothing to
+	# migrate.
 	per_opp: dict[str, list[str]] = {}
 	for r in rows:
-		per_opp.setdefault(r["parent"], []).append(r["lost_reason"])
+		lr = (r["lost_reason"] or "").strip()
+		if not lr:
+			continue
+		per_opp.setdefault(r["parent"], []).append(lr)
 
 	cache: set[str] = set(frappe.db.sql_list("SELECT name FROM `tabCRM Lost Reason`"))
 
@@ -749,6 +776,80 @@ def _derive_note_title(custom_title: str | None, note_html: str | None) -> str:
 _MIGRATED_NOTE_NAME_PREFIX = "mig-note-"
 
 
+def _resolve_source_note_title_field() -> str | None:
+	"""Pick the source CRM Note column to use as the human title.
+
+	Priority: `custom_title`, then `title`. Returns None if neither is
+	present — caller falls back to stripping the note body.
+	"""
+	meta = frappe.get_meta("CRM Note")
+	for candidate in ("custom_title", "title"):
+		if meta.has_field(candidate):
+			return candidate
+	return None
+
+
+def _reanchor_note_children() -> int:
+	"""Re-anchor child rows of any Table field on source CRM Note that has
+	a same-named, same-options Table field on FCRM Note.
+
+	Uses a JOIN against `tabFCRM Note` keyed off the `mig-note-<src_id>`
+	naming convention, so only rows whose corresponding FCRM Note has
+	already been created get re-anchored. Idempotent — once flipped,
+	rows no longer match `parenttype = 'CRM Note'`.
+
+	Skips silently if the matching Table field doesn't exist on FCRM Note
+	yet (e.g. the customer hasn't installed the mirrored custom field on
+	the target). The user can add it and re-run.
+	"""
+	src_meta = frappe.get_meta("CRM Note")
+	tgt_meta = frappe.get_meta("FCRM Note")
+	tgt_table_fields = {
+		df.fieldname: df.options
+		for df in tgt_meta.fields
+		if df.fieldtype == "Table"
+	}
+
+	total = 0
+	for df in src_meta.fields:
+		if df.fieldtype != "Table":
+			continue
+		if tgt_table_fields.get(df.fieldname) != df.options:
+			continue
+
+		child_dt = df.options
+		count_row = frappe.db.sql(
+			f"""
+			SELECT COUNT(*)
+			FROM `tab{child_dt}` c
+			JOIN `tabFCRM Note` f
+			  ON f.name = CONCAT(%s, c.parent)
+			WHERE c.parenttype = 'CRM Note'
+			  AND c.parentfield = %s
+			""",
+			(_MIGRATED_NOTE_NAME_PREFIX, df.fieldname),
+		)
+		n = int(count_row[0][0]) if count_row else 0
+		if not n:
+			continue
+
+		frappe.db.sql(
+			f"""
+			UPDATE `tab{child_dt}` c
+			JOIN `tabFCRM Note` f
+			  ON f.name = CONCAT(%s, c.parent)
+			SET c.parenttype = 'FCRM Note',
+			    c.parent = f.name
+			WHERE c.parenttype = 'CRM Note'
+			  AND c.parentfield = %s
+			""",
+			(_MIGRATED_NOTE_NAME_PREFIX, df.fieldname),
+		)
+		total += n
+
+	return total
+
+
 def reshape_notes(source_doctype: str) -> dict:
 	"""Convert ERPNext native CRM Note children under one source doctype
 	into standalone FCRM Note documents anchored to the migrated CRM
@@ -759,6 +860,15 @@ def reshape_notes(source_doctype: str) -> dict:
 	derive a deterministic string name `mig-note-{source_id}` so re-runs
 	are idempotent (same source row → same FCRM Note) and the reset
 	script can identify migrated rows precisely.
+
+	Title resolution: prefers `custom_title` (rtcamp/frappe_crm_xt
+	convention) or `title` on source CRM Note when present; otherwise
+	derives a title by stripping HTML from the note body.
+
+	Child Table re-anchor: any Table field on source CRM Note that also
+	exists with the same options on FCRM Note (e.g. `custom_note_attachments`
+	→ `NCRM Attachments`) has its children re-anchored to the migrated
+	FCRM Note row.
 
 	Source-meta preservation: owner defaults to `added_by`, creation
 	defaults to `added_on`. Phase 4 activity rewrite is irrelevant for
@@ -778,10 +888,17 @@ def reshape_notes(source_doctype: str) -> dict:
 	if not frappe.db.exists("DocType", "FCRM Note"):
 		return result
 
+	title_field = _resolve_source_note_title_field()
+	select_cols = (
+		"name, parent, owner, creation, modified, modified_by, docstatus, "
+		"note, added_by, added_on"
+	)
+	if title_field:
+		select_cols += f", `{title_field}` AS note_title"
+
 	rows = frappe.db.sql(
-		"""
-		SELECT name, parent, owner, creation, modified, modified_by, docstatus,
-		       note, added_by, added_on, custom_title
+		f"""
+		SELECT {select_cols}
 		FROM `tabCRM Note`
 		WHERE parenttype = %(pt)s
 		  AND parentfield = 'notes'
@@ -833,7 +950,7 @@ def reshape_notes(source_doctype: str) -> dict:
 				modified,
 				modified_by,
 				r.get("docstatus") or 0,
-				_derive_note_title(r.get("custom_title"), r.get("note")),
+				_derive_note_title(r.get("note_title"), r.get("note")),
 				r.get("note") or "",
 				target_doctype,
 				r["parent"],
@@ -856,6 +973,25 @@ def reshape_notes(source_doctype: str) -> dict:
 		except Exception as e:
 			result["failed"] += len(to_insert)
 			result["last_error"] = f"bulk_insert FCRM Note: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: FCRM Note bulk_insert",
+				message=frappe.get_traceback(),
+			)
+
+	# Re-anchor any Table-field children (e.g. `custom_note_attachments`)
+	# whose source CRM Note now has a corresponding FCRM Note row.
+	try:
+		result["ok"] += _reanchor_note_children()
+	except Exception as e:
+		result["failed"] += 1
+		result["last_error"] = (
+			f"reanchor note children: {e}" if not result["last_error"]
+			else f"{result['last_error']} | reanchor: {e}"
+		)[:500]
+		frappe.log_error(
+			title="Migrator reshape: note children re-anchor",
+			message=frappe.get_traceback(),
+		)
 
 	frappe.db.commit()
 	return result
@@ -978,6 +1114,10 @@ def reshape_assignments(source_doctype: str) -> dict:
 		except Exception as e:
 			result["failed"] += len(to_insert)
 			result["last_error"] = f"bulk_insert ToDo: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: assignments ToDo bulk_insert",
+				message=frappe.get_traceback(),
+			)
 
 	frappe.db.commit()
 	return result
@@ -999,12 +1139,20 @@ _ASSIGNMENT_DESC_RE = __import__("re").compile(
 	r"^\s*Assignment for \S", flags=__import__("re").IGNORECASE
 )
 
-# Map ERPNext ToDo.status to CRM Task.status.
-_TODO_STATUS_TO_TASK = {
+# ERPNext ToDo statuses that don't share a name with CRM Task. Everything
+# else (Backlog, In Progress, …) is a passthrough — only these three are
+# rewritten on the way to CRM Task.
+_TODO_STATUS_OVERRIDES = {
 	"Open": "Todo",
 	"Closed": "Done",
 	"Cancelled": "Canceled",
 }
+
+
+def _map_todo_status(source_status: str | None) -> str:
+	if not source_status:
+		return "Todo"
+	return _TODO_STATUS_OVERRIDES.get(source_status, source_status)
 
 
 def _ensure_task_marker_field() -> None:
@@ -1123,7 +1271,7 @@ def reshape_tasks(source_doctype: str) -> dict:
 					"title": _derive_task_title(t.get("description")),
 					"description": t.get("description") or "",
 					"assigned_to": t.get("allocated_to") or None,
-					"status": _TODO_STATUS_TO_TASK.get(t.get("status"), "Todo"),
+					"status": _map_todo_status(t.get("status")),
 					"priority": (t.get("priority") or "Medium").capitalize(),
 					"due_date": t.get("date") or None,
 					"reference_doctype": target_doctype,

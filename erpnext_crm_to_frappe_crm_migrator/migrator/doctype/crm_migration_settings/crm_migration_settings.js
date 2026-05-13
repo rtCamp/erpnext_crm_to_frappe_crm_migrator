@@ -175,6 +175,62 @@ function start_run(frm, source_doctype) {
 	);
 }
 
+function render_migrator_details(frm) {
+	const wrapper =
+		frm.fields_dict.migration_details_html
+		&& frm.fields_dict.migration_details_html.$wrapper;
+	if (!wrapper) return;
+
+	wrapper.html(
+		`<div class="text-muted" style="padding:6px 0">${__("Loading migrator details…")}</div>`
+	);
+
+	frappe.call({
+		method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.get_migrator_details",
+		callback(r) {
+			if (!r.message) return;
+			const rows = (r.message.activity_doctypes || [])
+				.map((row) => {
+					const scope = row.scope
+						? `<span class="text-muted" style="font-size:11px">${escape_html(row.scope)}</span>`
+						: `<span class="text-muted" style="font-size:11px">${__("all rows pointing at a source doctype")}</span>`;
+					return (
+						`<tr><td><b>${escape_html(row.doctype)}</b></td>` +
+						`<td><code>${escape_html(row.field)}</code></td>` +
+						`<td>${scope}</td></tr>`
+					);
+				})
+				.join("");
+			const table = rows
+				? `<table class="table table-bordered" style="margin-top:8px;font-size:12px">
+					<thead><tr>
+						<th>${__("DocType")}</th>
+						<th>${__("Rewritten Field")}</th>
+						<th>${__("Scope")}</th>
+					</tr></thead>
+					<tbody>${rows}</tbody>
+				</table>`
+				: `<div class="text-muted">${__("No activity doctypes registered.")}</div>`;
+
+			wrapper.html(
+				`<div style="padding:6px 0">
+					<h6>${__("Activity rewrite scope")}</h6>
+					<div class="text-muted" style="font-size:12px">
+						${__("The activity rewrite step changes the listed field on each doctype from ERPNext source values (Lead/Opportunity/Prospect/…) to the corresponding Frappe CRM values. Reference <i>names</i> are preserved during the core records migration, so only the doctype column changes. <b>Version</b> rows are included so the audit trail follows the migrated record.")}
+					</div>
+					${table}
+					<h6 style="margin-top:14px">${__("Additional migration side-effects")}</h6>
+					<ul class="text-muted" style="font-size:12px;padding-left:18px">
+						<li>${__("Native ERPNext notes (CRM Note children) become standalone <b>FCRM Note</b> docs anchored to the migrated CRM record. Any <code>custom_note_attachments</code> child rows are re-anchored to the new note.")}</li>
+						<li>${__("Content ToDos (those with a real description) are converted to <b>CRM Task</b> rows 1:1 with status mapped (Open → Todo, Closed → Done, Cancelled → Canceled; other statuses pass through).")}</li>
+						<li>${__("The <code>_assign</code> JSON cache on each migrated row is regenerated into <b>ToDo</b> rows so the assignment widget on the CRM doc page resolves correctly.")}</li>
+					</ul>
+				</div>`
+			);
+		},
+	});
+}
+
 frappe.ui.form.on("CRM Migration Settings", {
 	refresh(frm) {
 		// Save IS allowed — users edit target_field / action in the
@@ -283,6 +339,9 @@ frappe.ui.form.on("CRM Migration Settings", {
 
 		// --- Render the auto-mapped HTML summary on each tab ---
 		SOURCE_DOCTYPES.forEach((dt) => render_mapped_summary(frm, dt));
+
+		// --- Render the Details tab (version + activity-rewrite scope) ---
+		render_migrator_details(frm);
 
 		// --- Per-tab "Mark all as Skip" grid button (only when not locked) ---
 		// Hits a server endpoint so the change is persisted in one round-trip
