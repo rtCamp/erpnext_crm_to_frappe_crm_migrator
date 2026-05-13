@@ -1210,11 +1210,15 @@ def reshape_tasks(source_doctype: str) -> dict:
 	    field on CRM Task matches the ToDo.name).
 	  - ToDos whose parent CRM target hasn't been migrated yet.
 
-	Uses get_doc().insert() rather than bulk_insert so CRM Task's
-	`after_insert` hook fires — that hook creates the task's own
-	assignment ToDo (reference_type='CRM Task'), which the CRM
-	frontend's Tasks tab and assignment widget both expect.
+	Uses `frappe.db.bulk_insert` for the CRM Tasks themselves, then
+	synthesises the assignment ToDo + `_assign` cache that CRM Task's
+	`after_insert` would normally produce. This is faster than per-row
+	insert() and sidesteps the assign_to → has_permission → get_meta
+	chain that can blow up when an assignee has a stale User Permission
+	referencing an uninstalled doctype.
 	"""
+	import json
+
 	target_doctype = _SOURCE_TO_CRM_TARGET.get(source_doctype)
 	result = _empty_result()
 	if not target_doctype:
@@ -1250,6 +1254,25 @@ def reshape_tasks(source_doctype: str) -> dict:
 		)
 	)
 
+	# CRM Task uses autoname=autoincrement, which Frappe backs with a
+	# MariaDB sequence (not a column AUTO_INCREMENT). bulk_insert won't
+	# tap the sequence — so without an explicit `name`, every row would
+	# land with `name = 0` and ignore_duplicates would drop all but the
+	# first. Pre-allocate a name per row via NEXTVAL.
+	from frappe.database.sequence import get_next_val
+
+	task_cols = [
+		"name",
+		"owner", "creation", "modified", "modified_by", "docstatus",
+		"title", "description", "assigned_to", "status", "priority",
+		"due_date", "reference_doctype", "reference_docname",
+		_TASK_MARKER_FIELD, "_assign",
+	]
+	task_values: list[tuple] = []
+	# Markers we're about to insert — used later to map source ToDo →
+	# new CRM Task name when synthesising assignment ToDos.
+	new_markers: list[str] = []
+
 	for t in todos:
 		key = f"ToDo:{t['name']}"
 		try:
@@ -1265,29 +1288,146 @@ def reshape_tasks(source_doctype: str) -> dict:
 				result["skipped"] += 1
 				continue
 
-			task = frappe.get_doc(
-				{
-					"doctype": "CRM Task",
-					"title": _derive_task_title(t.get("description")),
-					"description": t.get("description") or "",
-					"assigned_to": t.get("allocated_to") or None,
-					"status": _map_todo_status(t.get("status")),
-					"priority": (t.get("priority") or "Medium").capitalize(),
-					"due_date": t.get("date") or None,
-					"reference_doctype": target_doctype,
-					"reference_docname": t["reference_name"],
-					_TASK_MARKER_FIELD: str(t["name"]),
-				}
-			)
-			# Preserve source meta on the task itself.
-			task.owner = t.get("owner") or "Administrator"
-			task.creation = t.get("creation")
-			task.modified = t.get("modified") or t.get("creation")
-			task.modified_by = t.get("modified_by") or task.owner
-			task.insert(ignore_permissions=True)
-			result["ok"] += 1
+			# `assigned_to` on CRM Task is a Data field — it's safe to set
+			# directly without going through assign_to(). The matching ToDo
+			# row + _assign cache are synthesised below.
+			assigned_to = t.get("allocated_to") or None
+			_assign_json = json.dumps([assigned_to]) if assigned_to else None
+
+			owner = t.get("owner") or "Administrator"
+			creation = t.get("creation")
+			modified = t.get("modified") or creation
+			modified_by = t.get("modified_by") or owner
+			marker = str(t["name"])
+
+			task_values.append((
+				get_next_val("CRM Task"),
+				owner,
+				creation,
+				modified,
+				modified_by,
+				t.get("docstatus") or 0,
+				_derive_task_title(t.get("description")),
+				t.get("description") or "",
+				assigned_to,
+				_map_todo_status(t.get("status")),
+				(t.get("priority") or "Medium").capitalize(),
+				t.get("date") or None,
+				target_doctype,
+				t["reference_name"],
+				marker,
+				_assign_json,
+			))
+			new_markers.append(marker)
 		except Exception as e:
 			_bump_failed(result, key, e)
+
+	if task_values:
+		try:
+			for offset in range(0, len(task_values), CHUNK_SIZE):
+				chunk = task_values[offset : offset + CHUNK_SIZE]
+				frappe.db.bulk_insert(
+					"CRM Task",
+					fields=task_cols,
+					values=chunk,
+					ignore_duplicates=True,
+				)
+			result["ok"] += len(task_values)
+		except Exception as e:
+			result["failed"] += len(task_values)
+			result["last_error"] = f"bulk_insert CRM Task: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: CRM Task bulk_insert",
+				message=frappe.get_traceback(),
+			)
+			frappe.db.commit()
+			return result
+
+	# Synthesise the assignment ToDo rows that CRM Task.after_insert would
+	# normally produce. Look up the autoincrement names assigned to the
+	# tasks we just inserted, then bulk_insert one ToDo per assignee.
+	if new_markers:
+		assigned_tasks = frappe.db.sql(
+			f"""
+			SELECT `name`, `owner`, `creation`, `assigned_to`, `due_date`,
+			       `{_TASK_MARKER_FIELD}` AS marker
+			FROM `tabCRM Task`
+			WHERE `{_TASK_MARKER_FIELD}` IN %(markers)s
+			  AND `assigned_to` IS NOT NULL AND `assigned_to` != ''
+			""",
+			{"markers": tuple(new_markers)},
+			as_dict=True,
+		)
+
+		# Dedup against any pre-existing ToDos so re-runs don't duplicate.
+		existing_assign_keys = set(
+			frappe.db.sql(
+				"""
+				SELECT reference_name, allocated_to
+				FROM `tabToDo`
+				WHERE reference_type = 'CRM Task'
+				  AND status = 'Open'
+				  AND reference_name IN %(names)s
+				""",
+				{"names": tuple(str(r["name"]) for r in assigned_tasks)}
+				if assigned_tasks else {"names": ("",)},
+			)
+		)
+
+		todo_cols = [
+			"name", "owner", "creation", "modified", "modified_by", "docstatus",
+			"status", "priority", "date", "allocated_to", "description",
+			"reference_type", "reference_name", "assigned_by",
+		]
+		todo_values: list[tuple] = []
+		for row in assigned_tasks:
+			task_name = str(row["name"])
+			user = row["assigned_to"]
+			if (task_name, user) in existing_assign_keys:
+				continue
+			assigned_by = row["owner"] or "Administrator"
+			created = row["creation"] or frappe.utils.now()
+			todo_values.append((
+				frappe.generate_hash(length=10),
+				assigned_by,
+				created,
+				created,
+				assigned_by,
+				0,
+				"Open",
+				"Medium",
+				row.get("due_date"),
+				user,
+				f"Assignment for CRM Task {task_name}",
+				"CRM Task",
+				task_name,
+				assigned_by,
+			))
+
+		if todo_values:
+			try:
+				for offset in range(0, len(todo_values), CHUNK_SIZE):
+					chunk = todo_values[offset : offset + CHUNK_SIZE]
+					frappe.db.bulk_insert(
+						"ToDo",
+						fields=todo_cols,
+						values=chunk,
+						ignore_duplicates=True,
+					)
+			except Exception as e:
+				# Tasks already landed; ToDo failure shouldn't undo them.
+				# Log + flag so the user can re-run the assignment-todo
+				# step (the next reshape_tasks call will pick up the
+				# missing ToDos via the dedup check).
+				result["failed"] += len(todo_values)
+				result["last_error"] = (
+					(result["last_error"] + " | " if result["last_error"] else "")
+					+ f"bulk_insert assignment ToDo: {e}"
+				)[:500]
+				frappe.log_error(
+					title="Migrator reshape: CRM Task assignment ToDo bulk_insert",
+					message=frappe.get_traceback(),
+				)
 
 	frappe.db.commit()
 	return result

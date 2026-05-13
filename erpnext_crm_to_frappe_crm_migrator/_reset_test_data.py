@@ -234,19 +234,48 @@ def reset_deal_only():
 			frappe.db.delete("ToDo", {"reference_type": "CRM Deal", "status": "Open"})
 			report["ToDo (CRM Deal, Open)"] = n
 
-	# 0d. Migrated CRM Tasks anchored to CRM Deal.
+	# 0d. Migrated CRM Tasks anchored to CRM Deal (or to Opportunity after
+	# the activity revert above flipped them back). Match by marker field,
+	# then narrow by either reference_doctype so we catch both states.
 	if (
 		frappe.db.exists("DocType", "CRM Task")
 		and frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"})
 	):
 		n = frappe.db.count(
 			"CRM Task",
-			{"custom_source_todo": ["is", "set"], "reference_doctype": "CRM Deal"},
+			{
+				"custom_source_todo": ["is", "set"],
+				"reference_doctype": ["in", ["CRM Deal", "Opportunity"]],
+			},
 		)
 		if n:
+			# Also drop the assignment ToDos those tasks own — the bulk
+			# task reshape now synthesises one ToDo per assignee with
+			# reference_type='CRM Task'. Re-running recreates them.
+			task_names = frappe.db.sql_list(
+				"""
+				SELECT name FROM `tabCRM Task`
+				WHERE `custom_source_todo` IS NOT NULL
+				  AND reference_doctype IN ('CRM Deal', 'Opportunity')
+				"""
+			)
+			if task_names:
+				todo_n = frappe.db.count(
+					"ToDo",
+					{"reference_type": "CRM Task", "reference_name": ["in", task_names]},
+				)
+				if todo_n:
+					frappe.db.delete(
+						"ToDo",
+						{"reference_type": "CRM Task", "reference_name": ["in", task_names]},
+					)
+					report["ToDo (assignment for migrated CRM Task)"] = todo_n
 			frappe.db.delete(
 				"CRM Task",
-				{"custom_source_todo": ["is", "set"], "reference_doctype": "CRM Deal"},
+				{
+					"custom_source_todo": ["is", "set"],
+					"reference_doctype": ["in", ["CRM Deal", "Opportunity"]],
+				},
 			)
 			report["CRM Task (CRM Deal, migrated)"] = n
 

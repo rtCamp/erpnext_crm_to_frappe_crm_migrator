@@ -33,6 +33,7 @@ from erpnext_crm_to_frappe_crm_migrator.api.mapping import DYNAMIC_LINK_ROUTES
 from erpnext_crm_to_frappe_crm_migrator.mapping.registry import (
 	REVERSE_DOCTYPE_MAP,
 	SOURCE_DOCTYPES,
+	SUGGESTION_MAP,
 )
 
 SETTINGS_DOCTYPE = "CRM Migration Settings"
@@ -650,6 +651,19 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 			if tgt_col not in target_cols and target_meta.has_field(tgt_col):
 				target_cols.append(tgt_col)
 
+	# Source-name routing: the registry's `*_TO_CRM_*` dicts may map
+	# the source's `name` key to a target column (e.g. UTM Source.name →
+	# CRM Lead Source.source_name). `name` never reaches the locked Field
+	# Map (it's a framework field filtered both in refresh_diff and in
+	# _load_field_map), so we resolve it from the registry here and pass
+	# the chosen target column into _build_target_row.
+	name_target_col = SUGGESTION_MAP.get(source_doctype, {}).get("name")
+	if name_target_col and not target_meta.has_field(name_target_col):
+		# Target doesn't have the column on this site — drop the rule.
+		name_target_col = None
+	if name_target_col and name_target_col not in target_cols:
+		target_cols.append(name_target_col)
+
 	# A reverse map src→tgt (for this doctype only) used during preprocess.
 	src_to_tgt = {src: tgt for src, tgt in field_pairs}
 
@@ -716,6 +730,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 					target_doctype,
 					source_doctype,
 					lead_to_prospect=lead_to_prospect,
+					name_target_col=name_target_col,
 				)
 				values.append(out)
 			except Exception as e:
@@ -796,6 +811,7 @@ def _build_target_row(
 	target_doctype: str,
 	source_doctype: str,
 	lead_to_prospect: dict[str, str] | None = None,
+	name_target_col: str | None = None,
 ) -> tuple:
 	"""Compute a tuple of values matching `target_cols` order for one row."""
 	out: dict[str, object] = {}
@@ -803,6 +819,12 @@ def _build_target_row(
 	# 1. preserved meta — copied straight from source
 	for f in PRESERVED_META_FIELDS:
 		out[f] = src_row.get(f)
+
+	# 1b. name-routing — registries that map `name → <target_col>` (e.g.
+	# UTM Source.name → CRM Lead Source.source_name). Skips the locked
+	# Field Map path because `name` is filtered there.
+	if name_target_col and name_target_col in target_cols:
+		out[name_target_col] = src_row.get("name")
 
 	# 2. metadata caches — copied if source has them (target column membership
 	# was already enforced when target_cols was built)

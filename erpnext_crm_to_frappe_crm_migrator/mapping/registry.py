@@ -94,9 +94,14 @@ CRM_INDUSTRY_TO_INDUSTRY_TYPE = {
 }
 INDUSTRY_TYPE_TO_CRM_INDUSTRY = {v: k for k, v in CRM_INDUSTRY_TO_INDUSTRY_TYPE.items()}
 
-# CRM Lead Source → UTM Source — both use the source name as the document name; no column rename
-CRM_LEAD_SOURCE_TO_UTM_SOURCE: dict[str, str] = {}
-UTM_SOURCE_TO_CRM_LEAD_SOURCE: dict[str, str] = {}
+# CRM Lead Source → UTM Source. Doc `name` is preserved via source-meta;
+# additionally written to `source_name` (the user-facing label column on
+# CRM Lead Source). `description` text maps to CRM Lead Source.details.
+CRM_LEAD_SOURCE_TO_UTM_SOURCE = {
+	"source_name": "name",
+	"details": "description",
+}
+UTM_SOURCE_TO_CRM_LEAD_SOURCE = {v: k for k, v in CRM_LEAD_SOURCE_TO_UTM_SOURCE.items()}
 
 # CRM Lost Reason → Opportunity Lost Reason
 CRM_LOST_REASON_TO_OPP_LOST_REASON = {
