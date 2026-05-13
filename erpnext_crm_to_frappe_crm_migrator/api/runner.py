@@ -468,6 +468,81 @@ def _build_lead_to_prospect_map(source_doctype: str) -> dict[str, str]:
 	return {r["lead"]: r["parent"] for r in rows}
 
 
+def _ensure_lead_company_orgs(
+	source_doctype: str,
+	lead_to_prospect: dict[str, str],
+) -> dict[str, str]:
+	"""Fallback for Opportunities-from-Lead whose Lead has no owning
+	Prospect: use the Lead's own `company_name` as the organization.
+
+	Returns `{lead_name: company_name}` and lazy-creates a CRM
+	Organization row per distinct company_name so `CRM Deal.organization`
+	resolves to a real row. Without this, `CRM Deal.title_field =
+	'organization'` renders as "undefined" on the desk for these deals.
+	"""
+	if source_doctype != "Opportunity":
+		return {}
+	if not frappe.db.exists("DocType", "CRM Organization"):
+		return {}
+
+	# Leads referenced by from='Lead' Opportunities that don't have an
+	# owning Prospect — these are the ones with no organization unless
+	# we bridge via the Lead's company_name.
+	rows = frappe.db.sql(
+		"""
+		SELECT l.name AS lead, l.company_name
+		FROM `tabLead` l
+		WHERE l.name IN (
+			SELECT DISTINCT party_name FROM `tabOpportunity`
+			WHERE opportunity_from = 'Lead'
+			  AND party_name IS NOT NULL AND party_name != ''
+		)
+		  AND l.company_name IS NOT NULL AND l.company_name != ''
+		""",
+		as_dict=True,
+	)
+	lead_to_company = {
+		r["lead"]: r["company_name"]
+		for r in rows
+		if r["lead"] not in lead_to_prospect
+	}
+	if not lead_to_company:
+		return {}
+
+	# Materialise CRM Organization rows for distinct company names that
+	# don't already exist as a CRM Organization (would also collide with
+	# existing Prospect-derived orgs, since both use the same name).
+	distinct_companies = set(lead_to_company.values())
+	already = set(frappe.db.sql_list(
+		"SELECT name FROM `tabCRM Organization` WHERE name IN %s",
+		(tuple(distinct_companies),),
+	))
+	to_create = distinct_companies - already
+	if to_create:
+		now = now_datetime()
+		values = [
+			(c, "Administrator", now, now, "Administrator", 0, c)
+			for c in to_create
+		]
+		try:
+			frappe.db.bulk_insert(
+				"CRM Organization",
+				fields=[
+					"name", "owner", "creation", "modified", "modified_by",
+					"docstatus", "organization_name",
+				],
+				values=values,
+				ignore_duplicates=True,
+			)
+		except Exception:
+			frappe.log_error(
+				title="Migrator: lazy CRM Organization for lead-from Opportunity",
+				message=frappe.get_traceback(),
+			)
+
+	return lead_to_company
+
+
 # ---------------------------------------------------------------------------
 # Customer → Prospect bridge for Opportunity-from-Customer rows
 # ---------------------------------------------------------------------------
@@ -678,6 +753,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	# is consulted in _build_target_row to populate CRM Deal.organization
 	# alongside CRM Deal.lead when opportunity_from='Lead'.
 	lead_to_prospect = _build_lead_to_prospect_map(source_doctype)
+	lead_to_company = _ensure_lead_company_orgs(source_doctype, lead_to_prospect)
 
 	# Read source rows in chunks via raw SQL — guarantees we see every
 	# column (including `_user_tags`, `_assign`, etc.) regardless of
@@ -730,6 +806,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 					target_doctype,
 					source_doctype,
 					lead_to_prospect=lead_to_prospect,
+					lead_to_company=lead_to_company,
 					name_target_col=name_target_col,
 				)
 				values.append(out)
@@ -804,6 +881,34 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 # preprocessing
 # ---------------------------------------------------------------------------
 
+def _dedup_json_list(raw: object) -> object:
+	"""Return `raw` with duplicate entries removed, preserving first-seen
+	order. Non-list values (NULL, malformed JSON, empty string) pass
+	through unchanged so the column ends up with whatever the database
+	default produces.
+	"""
+	if not raw or not isinstance(raw, str):
+		return raw
+	import json
+	try:
+		decoded = json.loads(raw)
+	except (json.JSONDecodeError, TypeError):
+		return raw
+	if not isinstance(decoded, list):
+		return raw
+	seen: set = set()
+	deduped: list = []
+	for item in decoded:
+		key = item if isinstance(item, (str, int, float, bool)) else json.dumps(item, sort_keys=True)
+		if key in seen:
+			continue
+		seen.add(key)
+		deduped.append(item)
+	if len(deduped) == len(decoded):
+		return raw  # no change — keep the original encoding
+	return json.dumps(deduped)
+
+
 def _build_target_row(
 	src_row: dict,
 	src_to_tgt: dict,
@@ -811,6 +916,7 @@ def _build_target_row(
 	target_doctype: str,
 	source_doctype: str,
 	lead_to_prospect: dict[str, str] | None = None,
+	lead_to_company: dict[str, str] | None = None,
 	name_target_col: str | None = None,
 ) -> tuple:
 	"""Compute a tuple of values matching `target_cols` order for one row."""
@@ -827,10 +933,16 @@ def _build_target_row(
 		out[name_target_col] = src_row.get("name")
 
 	# 2. metadata caches — copied if source has them (target column membership
-	# was already enforced when target_cols was built)
+	# was already enforced when target_cols was built). `_assign`,
+	# `_user_tags` and `_liked_by` are JSON lists that source data
+	# sometimes accumulates duplicate entries in (e.g. the same user added
+	# to _assign twice by separate code paths). The desk + the CRM
+	# frontend both render those lists naively, so a duplicate entry
+	# shows up as a doubled avatar / chip. Strip duplicates here
+	# preserving first-seen order.
 	for f in PRESERVED_META_CACHE_FIELDS:
 		if f in target_cols:
-			out[f] = src_row.get(f)
+			out[f] = _dedup_json_list(src_row.get(f))
 
 	# 3. mapped fields — the locked map drives the renames. Dynamic
 	# Link source fields are deliberately skipped here so they don't
@@ -870,20 +982,22 @@ def _build_target_row(
 		if chosen in target_cols and value:
 			out[chosen] = value
 
-	# 6. For Opportunity from=Lead: also populate CRM Deal.organization
-	# from the Prospect that owns the Lead (Prospect.leads child rows).
-	# Step 5 routes party_name to lead in this case, leaving organization
-	# blank; this step fills it in from the Lead → Prospect map. Skipped
-	# silently if the Lead has no owning Prospect.
+	# 6. For Opportunity from=Lead: also populate CRM Deal.organization.
+	# Prefer the Prospect that owns the Lead (Prospect.leads child rows).
+	# Otherwise fall back to the Lead's own company_name (a CRM
+	# Organization for which is lazy-created in _ensure_lead_company_orgs).
+	# Without one or the other, the deal lands with organization=NULL and
+	# the desk renders the title as "undefined" because CRM Deal's
+	# title_field is `organization`.
 	if (
-		lead_to_prospect
-		and source_doctype == "Opportunity"
+		source_doctype == "Opportunity"
 		and src_row.get("opportunity_from") == "Lead"
 		and "organization" in target_cols
 	):
-		owning_prospect = lead_to_prospect.get(src_row.get("party_name"))
-		if owning_prospect:
-			out["organization"] = owning_prospect
+		lead = src_row.get("party_name")
+		owning = (lead_to_prospect or {}).get(lead) or (lead_to_company or {}).get(lead)
+		if owning:
+			out["organization"] = owning
 
 	# Build the tuple in target_cols order. None for any column we didn't
 	# populate — the database default takes over (typically NULL).
@@ -931,12 +1045,13 @@ def _column_exists(doctype: str, column: str) -> bool:
 # canonical CRM target field instead of being skipped for lack of a
 # same-name match. Keyed by (source_doctype, source_field) → target_field.
 SHARED_CHILD_FIELD_MERGES: dict[tuple[str, str], str] = {
-	# Opportunity has both `status_change_log` (next_crm) and
-	# `custom_stage_change_log` (an extra customisation) — both
-	# pointing at CRM Status Change Log child rows. CRM Deal only has
-	# one canonical `status_change_log` field, so we merge the
-	# stage-log rows into the canonical target.
-	("Opportunity", "custom_stage_change_log"): "status_change_log",
+	# (Currently empty.) Populate when a source has an extra Table field
+	# whose child doctype IS the same as the target's canonical Table,
+	# and the rows should be folded into it rather than re-anchored
+	# under a different field name. When the source/target child
+	# doctypes differ (e.g. CRM Stage Change Log vs CRM Status Change
+	# Log), use a Phase-3 reshape instead — see
+	# reshape_opportunity_stage_logs.
 }
 
 

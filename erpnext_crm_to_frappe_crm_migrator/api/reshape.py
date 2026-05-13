@@ -562,17 +562,31 @@ def reshape_opportunity_contacts() -> dict:
 				message=frappe.get_traceback(),
 			)
 
-	# Backfill CRM Deal.contact scalar where empty
-	for deal_name, primary_contact in scalar_backfills:
-		try:
-			current = frappe.db.get_value("CRM Deal", deal_name, "contact")
-			if not current:
-				frappe.db.set_value(
-					"CRM Deal", deal_name, "contact", primary_contact,
-					update_modified=False,
+	# Backfill CRM Deal.contact scalar where empty. Single CASE-WHEN
+	# UPDATE per chunk — the previous per-row set_value loop deadlocked
+	# against the preceding tabCRM Contacts bulk_insert's index locks.
+	if scalar_backfills:
+		for offset in range(0, len(scalar_backfills), CHUNK_SIZE):
+			chunk = scalar_backfills[offset : offset + CHUNK_SIZE]
+			try:
+				whens: list[str] = []
+				args: list[object] = []
+				for deal_name, primary_contact in chunk:
+					whens.append("WHEN %s THEN %s")
+					args.extend([deal_name, primary_contact])
+				placeholders = ", ".join(["%s"] * len(chunk))
+				args.extend(name for name, _ in chunk)
+				frappe.db.sql(
+					f"""
+					UPDATE `tabCRM Deal`
+					SET contact = CASE name {' '.join(whens)} END
+					WHERE name IN ({placeholders})
+					  AND (contact IS NULL OR contact = '')
+					""",
+					args,
 				)
-		except Exception as e:
-			_bump_failed(result, f"backfill {deal_name}.contact", e)
+			except Exception as e:
+				_bump_failed(result, f"backfill CRM Deal.contact (chunk @ {offset})", e)
 
 	# Mark the matching row primary if no row ended up flagged (when the row
 	# was created on a previous run with is_primary=0 because Phase 2 hadn't
@@ -1037,18 +1051,22 @@ def reshape_assignments(source_doctype: str) -> dict:
 	if not rows:
 		return result
 
-	# Pre-fetch existing Open ToDos for this target doctype, indexed by
-	# (reference_name, allocated_to). The dedup key includes the
-	# allocated user so a doc with multiple assignees gets one ToDo per
-	# user — matching ERPNext's standard model.
+	# Pre-fetch existing Open ToDos for this (reference_name, allocated_to)
+	# pair across BOTH the source and target reference_type. The activity
+	# rewrite later flips source assignment ToDos from <source> to <target>,
+	# so a source-side row blocks duplication just as well as a target-side
+	# one — including both here is what makes the dedup correct regardless
+	# of step ordering. Source name == target name (preserved by Phase 2),
+	# so the same `reference_name` keys both sides.
 	existing = set(
 		frappe.db.sql(
 			"""
 			SELECT reference_name, allocated_to
 			FROM `tabToDo`
-			WHERE reference_type = %s AND status = 'Open'
+			WHERE reference_type IN (%s, %s)
+			  AND status = 'Open'
 			""",
-			(target_doctype,),
+			(source_doctype, target_doctype),
 		)
 	)
 
@@ -1434,6 +1452,102 @@ def reshape_tasks(source_doctype: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 8. Opportunity.custom_stage_change_log → CRM Deal.status_change_log
+# ---------------------------------------------------------------------------
+
+# Columns shared between CRM Stage Change Log (source child) and CRM Status
+# Change Log (target child). Stage-only columns are dropped; Status-only
+# columns (from_type, to_type, last_status_change_log) are left at default.
+_STAGE_LOG_SHARED_COLS = ("from", "from_date", "to", "to_date", "duration", "log_owner")
+
+
+def reshape_opportunity_stage_logs() -> dict:
+	"""Merge Opportunity.custom_stage_change_log children into the migrated
+	CRM Deal's status_change_log.
+
+	Source rows live in `tabCRM Stage Change Log`; target child rows live
+	in `tabCRM Status Change Log` (different child doctype, so this is a
+	reshape, not a parenttype re-anchor). The two doctypes share six
+	useful columns — those are copied verbatim. Parent (deal name) is
+	preserved via the source-meta-preservation policy in Phase 2.
+
+	Idempotent: target rows are named `mig-stagelog-<source_name>` so
+	re-runs hit the same row + ignore_duplicates skip.
+	"""
+	result = _empty_result()
+	if not frappe.db.exists("DocType", "CRM Stage Change Log"):
+		return result
+	if not frappe.db.exists("DocType", "CRM Status Change Log"):
+		return result
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT name, parent, owner, creation, modified, modified_by,
+		       docstatus, idx,
+		       {", ".join(f"`{c}`" for c in _STAGE_LOG_SHARED_COLS)}
+		FROM `tabCRM Stage Change Log`
+		WHERE parenttype = 'Opportunity'
+		  AND parentfield = 'custom_stage_change_log'
+		ORDER BY parent, idx
+		""",
+		as_dict=True,
+	)
+	if not rows:
+		return result
+
+	migrated_deals = set(frappe.db.sql_list("SELECT name FROM `tabCRM Deal`"))
+
+	target_cols = [
+		"name", "owner", "creation", "modified", "modified_by",
+		"docstatus", "idx",
+		"parent", "parenttype", "parentfield",
+		*_STAGE_LOG_SHARED_COLS,
+	]
+	to_insert: list[tuple] = []
+	for r in rows:
+		if r["parent"] not in migrated_deals:
+			result["skipped"] += 1
+			continue
+		owner = r.get("owner") or "Administrator"
+		creation = r.get("creation")
+		to_insert.append((
+			f"mig-stagelog-{r['name']}",
+			owner,
+			creation,
+			r.get("modified") or creation,
+			r.get("modified_by") or owner,
+			r.get("docstatus") or 0,
+			r.get("idx") or 0,
+			r["parent"],
+			"CRM Deal",
+			"status_change_log",
+			*(r.get(c) for c in _STAGE_LOG_SHARED_COLS),
+		))
+
+	if to_insert:
+		try:
+			for offset in range(0, len(to_insert), CHUNK_SIZE):
+				chunk = to_insert[offset : offset + CHUNK_SIZE]
+				frappe.db.bulk_insert(
+					"CRM Status Change Log",
+					fields=target_cols,
+					values=chunk,
+					ignore_duplicates=True,
+				)
+			result["ok"] += len(to_insert)
+		except Exception as e:
+			result["failed"] += len(to_insert)
+			result["last_error"] = f"bulk_insert stage→status merge: {e}"[:500]
+			frappe.log_error(
+				title="Migrator reshape: stage-log merge bulk_insert",
+				message=frappe.get_traceback(),
+			)
+
+	frappe.db.commit()
+	return result
+
+
+# ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
 
@@ -1454,6 +1568,7 @@ def reshape_for(source_doctype: str) -> dict:
 		_merge(totals, reshape_opportunity_items())
 		_merge(totals, reshape_opportunity_contacts())
 		_merge(totals, reshape_opportunity_lost_reasons())
+		_merge(totals, reshape_opportunity_stage_logs())
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
 		_merge(totals, reshape_tasks(source_doctype))

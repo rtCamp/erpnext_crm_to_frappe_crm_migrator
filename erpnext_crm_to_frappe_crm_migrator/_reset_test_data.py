@@ -122,8 +122,59 @@ def reset_all():
 			frappe.db.delete("CRM Task", {"custom_source_todo": ["is", "set"]})
 			report["CRM Task (migrated)"] = n
 
-	# 1. Delete child-table rows belonging to target parents.
+	# 1a. Re-anchored children (CRM Status Change Log) — these started life
+	# on the source (parenttype='Lead'/'Opportunity'); the migrator's
+	# _reanchor_shared_children flipped them to parenttype='CRM Lead' /
+	# 'CRM Deal'. Reverting (instead of deleting) preserves the source
+	# data so re-running the migration produces the same target state.
+	# Migrator-synthesised rows (mig-stagelog-*) are deleted in step 1b
+	# below — they're new copies, not source moves.
+	if frappe.db.exists("DocType", "CRM Status Change Log"):
+		for tgt_parent, src_parent in (
+			("CRM Lead", "Lead"),
+			("CRM Deal", "Opportunity"),
+		):
+			n = frappe.db.sql(
+				"""
+				SELECT COUNT(*) FROM `tabCRM Status Change Log`
+				WHERE parenttype = %s
+				  AND parentfield = 'status_change_log'
+				  AND name NOT LIKE 'mig-stagelog-%%'
+				""",
+				(tgt_parent,),
+			)[0][0]
+			if n:
+				frappe.db.sql(
+					"""
+					UPDATE `tabCRM Status Change Log`
+					SET parenttype = %s
+					WHERE parenttype = %s
+					  AND parentfield = 'status_change_log'
+					  AND name NOT LIKE 'mig-stagelog-%%'
+					""",
+					(src_parent, tgt_parent),
+				)
+				report[f"reanchor revert CRM Status Change Log: {tgt_parent} → {src_parent}"] = int(n)
+
+	# 1b. Delete synthesised child rows (mig-stagelog-* from the
+	# Opportunity stage-log merge), then delete remaining target-side
+	# child rows (CRM Products / CRM Contacts / CRM Rolling Response
+	# Time — all reshape-synthesised, no source loss).
+	if frappe.db.exists("DocType", "CRM Status Change Log"):
+		n = frappe.db.count(
+			"CRM Status Change Log",
+			{"parenttype": ["in", ["CRM Lead", "CRM Deal"]], "name": ["like", "mig-stagelog-%"]},
+		)
+		if n:
+			frappe.db.delete(
+				"CRM Status Change Log",
+				{"parenttype": ["in", ["CRM Lead", "CRM Deal"]], "name": ["like", "mig-stagelog-%"]},
+			)
+			report["child CRM Status Change Log (mig-stagelog)"] = n
+
 	for child_dt, parent_types in TARGET_CHILDREN:
+		if child_dt == "CRM Status Change Log":
+			continue  # handled in 1a + 1b
 		if not frappe.db.exists("DocType", child_dt):
 			continue
 		n_before = frappe.db.count(child_dt, {"parenttype": ["in", parent_types]})
@@ -279,14 +330,47 @@ def reset_deal_only():
 			)
 			report["CRM Task (CRM Deal, migrated)"] = n
 
-	# 1. Child rows under CRM Deal.
-	deal_children = [
-		"CRM Products",
-		"CRM Contacts",
-		"CRM Status Change Log",
-		"CRM Rolling Response Time",
-	]
-	for child_dt in deal_children:
+	# 1a. Re-anchored children — revert (not delete). CRM Status Change Log
+	# under CRM Deal started life as Opportunity.status_change_log rows
+	# that the migrator's _reanchor_shared_children flipped over. Deleting
+	# would destroy source data. Exclude mig-stagelog-* (those are newly
+	# synthesised by reshape_opportunity_stage_logs — delete them in 1b).
+	if frappe.db.exists("DocType", "CRM Status Change Log"):
+		n = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabCRM Status Change Log`
+			WHERE parenttype = 'CRM Deal'
+			  AND parentfield = 'status_change_log'
+			  AND name NOT LIKE 'mig-stagelog-%%'
+			"""
+		)[0][0]
+		if n:
+			frappe.db.sql(
+				"""
+				UPDATE `tabCRM Status Change Log`
+				SET parenttype = 'Opportunity'
+				WHERE parenttype = 'CRM Deal'
+				  AND parentfield = 'status_change_log'
+				  AND name NOT LIKE 'mig-stagelog-%%'
+				"""
+			)
+			report["reanchor revert CRM Status Change Log: CRM Deal → Opportunity"] = int(n)
+
+		# 1b. Drop only the merge-synthesised stage-log rows.
+		n = frappe.db.count(
+			"CRM Status Change Log",
+			{"parenttype": "CRM Deal", "name": ["like", "mig-stagelog-%"]},
+		)
+		if n:
+			frappe.db.delete(
+				"CRM Status Change Log",
+				{"parenttype": "CRM Deal", "name": ["like", "mig-stagelog-%"]},
+			)
+			report["child CRM Status Change Log (mig-stagelog)"] = n
+
+	# 1c. Synthesised target-only children — safe to delete; nothing
+	# upstream depends on them.
+	for child_dt in ("CRM Products", "CRM Contacts", "CRM Rolling Response Time"):
 		if not frappe.db.exists("DocType", child_dt):
 			continue
 		n = frappe.db.count(child_dt, {"parenttype": "CRM Deal"})
