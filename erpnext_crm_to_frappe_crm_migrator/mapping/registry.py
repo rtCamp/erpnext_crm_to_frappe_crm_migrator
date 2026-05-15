@@ -50,6 +50,7 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"email": "contact_email",
 	"source": "utm_source",
 	"status": "status",
+	"closed_date": "custom_won_date",
 	"organization_name": "customer_name",
 	"exchange_rate": "conversion_rate",
 	"probability": "probability",
