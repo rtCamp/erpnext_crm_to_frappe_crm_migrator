@@ -49,7 +49,7 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"contact": "contact_person",
 	"email": "contact_email",
 	"source": "utm_source",
-	"status": "sales_stage",
+	"status": "status",
 	"organization_name": "customer_name",
 	"exchange_rate": "conversion_rate",
 	"probability": "probability",
