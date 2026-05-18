@@ -46,13 +46,15 @@ Frappe-CRM migration setup. Resume from here when continuing the audit.
 
 ## Opportunity → CRM Deal
 
-*Audit not yet walked — see "Open items" below.*
-
 ### Already decided / done
 
 - `custom_priority` mirrored on CRM Deal: https://github.com/rtCamp/frappe_crm_xt/commit/c696813
 - `custom_won_date` registry-renamed to `CRM Deal.closed_date`: https://github.com/rtCamp/erpnext_crm_to_frappe_crm_migrator/commit/77e7310
 - `sales_stage` mirrored on CRM Deal (Link → Sales Stage); same-name auto-maps via the migrator's diff.
+- `transaction_date` mirrored on CRM Deal (Date); same-name auto-maps. Preserves the 10 deals where source's user-asserted date diverges from DATE(creation).
+- `title`, `company`, `country`, `city`, `state`, `customer_address`, `address_display` — mirrored as custom fields on CRM Deal; same-name auto-mapping handles them.
+- `contact_email → email`, `contact_mobile → mobile_no` — registry pair on CRM_DEAL_TO_OPPORTUNITY; auto-mapped after dropping the stale `contact_email → contact_email` dead entry.
+- `order_lost_reason` — folded into `reshape_opportunity_lost_reasons`. Free-form text is appended to `CRM Deal.lost_notes` as `Detailed: <text>`, alongside the existing extras-from-multi-lost_reasons append. No registry rename or field-map row needed.
 - `status`: registry maps `Opportunity.status → CRM Deal.status` (value alignment not done — only "Open" overlaps natively with `CRM Deal Status`; needs status-row additions or a value-translation map).
 
 ## Prospect → CRM Organization

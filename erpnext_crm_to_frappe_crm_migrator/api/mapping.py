@@ -27,6 +27,7 @@ from frappe.utils import now_datetime
 
 from erpnext_crm_to_frappe_crm_migrator.mapping.registry import (
 	ALL_SKIP_FIELDS,
+	RESHAPE_HANDLED_FIELDS,
 	REVERSE_DOCTYPE_MAP,
 	SOURCE_DOCTYPES,
 	SUGGESTION_MAP,
@@ -237,6 +238,7 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 		return []
 
 	suggestions = SUGGESTION_MAP.get(source_doctype, {})
+	reshape_handled = RESHAPE_HANDLED_FIELDS.get(source_doctype, set())
 	rows = []
 	for df in src_meta.fields:
 		if _is_layout_field(df):
@@ -250,6 +252,12 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 		# (Opportunity Item → CRM Products, lost_reasons → lost_reason).
 		# Hiding them keeps the diff focused on real column mappings.
 		if df.fieldtype in ("Table", "Table MultiSelect"):
+			continue
+		# Source fields whose data lands on the target via a Phase-3
+		# reshape (e.g. Opportunity.order_lost_reason → CRM Deal.lost_notes
+		# via reshape_opportunity_lost_reasons) — hide so the user isn't
+		# asked to resolve a row that's already covered.
+		if df.fieldname in reshape_handled:
 			continue
 		rows.append(_build_row_for_field(df, source_doctype, target_doctype, suggestions))
 

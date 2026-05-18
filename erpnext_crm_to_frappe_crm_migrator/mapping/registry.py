@@ -33,9 +33,10 @@ CRM_LEAD_TO_LEAD = {
 	"territory": "territory",
 	"industry": "industry",
 	"status": "status",
-	# SLA response tracking — rtcamp's ERPNext-side custom fields land on
-	# native CRM Lead columns instead of being mirrored as customs.
-	"response_by": "custom_last_response_by",
+	# SLA response tracking — rtcamp's `custom_last_responded_on` is the
+	# rtcamp/next_crm equivalent of Frappe CRM's native `last_responded_on`.
+	# `response_by` itself auto-maps via same-name fallback (Lead.response_by
+	# → CRM Lead.response_by); no registry entry needed.
 	"last_responded_on": "custom_last_responded_on",
 }
 LEAD_TO_CRM_LEAD = {v: k for k, v in CRM_LEAD_TO_LEAD.items()}
@@ -48,6 +49,7 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"expected_closure_date": "expected_closing",
 	"contact": "contact_person",
 	"email": "contact_email",
+	"mobile_no": "contact_mobile",
 	"source": "utm_source",
 	"status": "status",
 	"closed_date": "custom_won_date",
@@ -62,10 +64,14 @@ CRM_DEAL_TO_OPPORTUNITY = {
 	"website": "website",
 	"phone": "phone",
 	"job_title": "job_title",
-	"contact_email": "contact_email",
-	# SLA response tracking — rtcamp's ERPNext-side custom fields land on
-	# native CRM Deal columns instead of being mirrored as customs.
-	"response_by": "custom_last_response_by",
+	# SLA response tracking — `custom_last_responded_on` is the
+	# rtcamp/next_crm equivalent of Frappe CRM's native `last_responded_on`,
+	# so the rename stays explicit. The other 3 SLA fields
+	# (`response_by`, `first_responded_on`, `custom_last_response_by`)
+	# auto-map via same-name fallback — `response_by` and
+	# `first_responded_on` to their native CRM Deal columns, and
+	# `custom_last_response_by` to its frappe_crm_xt mirror, with no
+	# data loss on either side.
 	"last_responded_on": "custom_last_responded_on",
 }
 OPPORTUNITY_TO_CRM_DEAL = {v: k for k, v in CRM_DEAL_TO_OPPORTUNITY.items()}
@@ -185,3 +191,16 @@ SKIP_FIELDS = {
 }
 
 ALL_SKIP_FIELDS = FRAMEWORK_FIELDS | SKIP_FIELDS
+
+
+# Source-side fields whose data is migrated via Phase-3 reshape, not via
+# a column rename in the locked Field Map. Hidden from the per-tab
+# decision table so the user doesn't have to resolve a row that's
+# already covered. Keyed by source doctype → set of fieldnames.
+RESHAPE_HANDLED_FIELDS: dict[str, set[str]] = {
+	"Opportunity": {
+		# Free-form lost-reason text — folded into CRM Deal.lost_notes by
+		# reshape_opportunity_lost_reasons alongside the multi-row extras.
+		"order_lost_reason",
+	},
+}

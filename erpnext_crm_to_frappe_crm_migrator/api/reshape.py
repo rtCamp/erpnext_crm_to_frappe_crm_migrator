@@ -653,8 +653,11 @@ def _ensure_crm_lost_reason(lost_reason: str, cache: set[str]) -> tuple[bool, st
 
 
 def reshape_opportunity_lost_reasons() -> dict:
-	"""Take each Opportunity's lost_reasons table; set CRM Deal.lost_reason
-	(if empty) to the first row, append extras to lost_notes.
+	"""Migrate Opportunity's lost-reason data onto the migrated CRM Deal:
+
+	  - First lost_reasons child row → `CRM Deal.lost_reason` (if empty).
+	  - Extra lost_reasons rows + free-form `Opportunity.order_lost_reason`
+	    text → appended to `CRM Deal.lost_notes` with a separator.
 	"""
 	result = _empty_result()
 
@@ -662,17 +665,13 @@ def reshape_opportunity_lost_reasons() -> dict:
 	if not migrated_deals:
 		return result
 
-	# Source rows: child of Opportunity; child doctype = "Opportunity Lost Reason"
-	# (yes, same name as the lookup; the Table MultiSelect uses the same DocType
-	# name for its child rows in some setups). Detect the actual child doctype
-	# from the source meta to be safe.
+	# Source child rows: lost_reasons Table MultiSelect. Detect the child
+	# doctype from source meta (varies a little across ERPNext versions).
 	opp_meta = frappe.get_meta("Opportunity")
 	lr_field = opp_meta.get_field("lost_reasons")
-	if lr_field is None:
+	if lr_field is None or not lr_field.options:
 		return result
 	child_dt = lr_field.options
-	if not child_dt:
-		return result
 
 	rows = frappe.db.sql(
 		f"""
@@ -684,12 +683,7 @@ def reshape_opportunity_lost_reasons() -> dict:
 		""",
 		as_dict=True,
 	)
-	if not rows:
-		return result
-
-	# Group by Opportunity name, dropping empty values — Table MultiSelect
-	# tolerates blank rows (no selection made), but those are nothing to
-	# migrate.
+	# Group lost_reasons by Opportunity, dropping empty rows.
 	per_opp: dict[str, list[str]] = {}
 	for r in rows:
 		lr = (r["lost_reason"] or "").strip()
@@ -697,39 +691,67 @@ def reshape_opportunity_lost_reasons() -> dict:
 			continue
 		per_opp.setdefault(r["parent"], []).append(lr)
 
-	cache: set[str] = set(frappe.db.sql_list("SELECT name FROM `tabCRM Lost Reason`"))
+	# Free-form detailed-reason text on the Opportunity parent. Only pull
+	# if the column exists (it's vanilla ERPNext, but defensively check).
+	detail_text: dict[str, str] = {}
+	if "order_lost_reason" in frappe.db.get_table_columns("Opportunity"):
+		text_rows = frappe.db.sql(
+			"""
+			SELECT name, order_lost_reason
+			FROM `tabOpportunity`
+			WHERE order_lost_reason IS NOT NULL AND order_lost_reason != ''
+			""",
+			as_dict=True,
+		)
+		detail_text = {r["name"]: r["order_lost_reason"].strip() for r in text_rows}
 
-	for opp_name, reasons in per_opp.items():
+	if not per_opp and not detail_text:
+		return result
+
+	cache: set[str] = set(frappe.db.sql_list("SELECT name FROM `tabCRM Lost Reason`"))
+	all_opps = set(per_opp) | set(detail_text)
+
+	for opp_name in all_opps:
 		key = f"LostReason:{opp_name}"
 		try:
 			if opp_name not in migrated_deals:
 				result["skipped"] += 1
 				continue
 
-			# Lazy-create any missing CRM Lost Reason
+			reasons = per_opp.get(opp_name, [])
+			detail = detail_text.get(opp_name, "")
+
+			# Lazy-create CRM Lost Reasons for each child entry.
 			for r in reasons:
 				_, err = _ensure_crm_lost_reason(r, cache)
 				if err:
 					_bump_failed(result, key, RuntimeError(err))
 					continue
 
-			# Set scalar if empty
 			changed = False
-			current = frappe.db.get_value("CRM Deal", opp_name, "lost_reason")
-			if not current:
-				frappe.db.set_value(
-					"CRM Deal", opp_name, "lost_reason", reasons[0],
-					update_modified=False,
-				)
-				changed = True
 
-			# Append extras to lost_notes if multiple
+			# Set scalar lost_reason if a child row exists and target empty.
+			if reasons:
+				current = frappe.db.get_value("CRM Deal", opp_name, "lost_reason")
+				if not current:
+					frappe.db.set_value(
+						"CRM Deal", opp_name, "lost_reason", reasons[0],
+						update_modified=False,
+					)
+					changed = True
+
+			# Build the lost_notes append block: extras + free-form detail.
+			parts: list[str] = []
 			if len(reasons) > 1:
+				parts.append(f"Other reasons: {', '.join(reasons[1:])}")
+			if detail:
+				parts.append(f"Detailed: {detail}")
+
+			if parts:
+				marker = "\n\n".join(parts)
 				existing_notes = cstr(
 					frappe.db.get_value("CRM Deal", opp_name, "lost_notes")
 				)
-				extras = ", ".join(reasons[1:])
-				marker = f"Other reasons: {extras}"
 				if marker not in existing_notes:
 					new_notes = (
 						f"{existing_notes}\n\n{marker}"
