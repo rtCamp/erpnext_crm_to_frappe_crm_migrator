@@ -1199,13 +1199,16 @@ def _ensure_task_marker_field() -> None:
 	)
 
 
-def _derive_task_title(description_html: str | None) -> str:
-	"""Pick a usable title from the ToDo description.
+def _derive_task_title(custom_title: str | None, description_html: str | None) -> str:
+	"""Pick a usable title for the migrated CRM Task.
 
-	ToDo descriptions are Text Editor (HTML) on modern Frappe. Strip
-	tags, collapse whitespace, take first ~80 chars; fall back to
-	"Task" if blank (CRM Task.title is required).
+	Prefer the source ToDo's `custom_title` (a rtcamp/next_crm Custom
+	Field that explicitly stores the human-set title), else strip HTML
+	from `description` and take the first ~80 chars. Fall back to
+	"Task" if both are empty — CRM Task.title is required.
 	"""
+	if custom_title:
+		return custom_title.strip()[:140] or "Task"
 	if not description_html:
 		return "Task"
 	import re
@@ -1246,15 +1249,21 @@ def reshape_tasks(source_doctype: str) -> dict:
 
 	_ensure_task_marker_field()
 
-	# Source ToDos on this doctype.
+	# Source ToDos on this doctype. `custom_title` is a rtcamp/next_crm
+	# Custom Field — only pull it if the column actually exists, so the
+	# query stays compatible with vanilla Frappe sites.
+	todo_columns = (
+		"name", "owner", "creation", "modified", "modified_by", "docstatus",
+		"status", "priority", "date", "allocated_to", "description",
+		"reference_type", "reference_name", "assigned_by",
+	)
+	has_custom_title = "custom_title" in frappe.db.get_table_columns("ToDo")
+	select_cols = ", ".join(f"`{c}`" for c in todo_columns)
+	if has_custom_title:
+		select_cols += ", `custom_title`"
+
 	todos = frappe.db.sql(
-		"""
-		SELECT name, owner, creation, modified, modified_by, docstatus,
-		       status, priority, date, allocated_to, description,
-		       reference_type, reference_name, assigned_by
-		FROM `tabToDo`
-		WHERE reference_type = %s
-		""",
+		f"SELECT {select_cols} FROM `tabToDo` WHERE reference_type = %s",
 		(source_doctype,),
 		as_dict=True,
 	)
@@ -1325,7 +1334,7 @@ def reshape_tasks(source_doctype: str) -> dict:
 				modified,
 				modified_by,
 				t.get("docstatus") or 0,
-				_derive_task_title(t.get("description")),
+				_derive_task_title(t.get("custom_title"), t.get("description")),
 				t.get("description") or "",
 				assigned_to,
 				_map_todo_status(t.get("status")),
