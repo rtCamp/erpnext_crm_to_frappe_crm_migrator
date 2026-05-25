@@ -82,15 +82,17 @@ def reset_all():
 			)
 			report[f"activity {activity_dt}: {target_dt} → {source_dt}"] = n
 
-	# 0b. Delete FCRM Notes that the Phase 3 notes reshape created
-	# (their names carry the `mig-note-` prefix — see reshape_notes).
-	# Re-running the migration recreates them from the source CRM Note
-	# children. This filter is precise — user-created CRM-frontend
-	# FCRM Notes don't carry the prefix and are left alone.
-	if frappe.db.exists("DocType", "FCRM Note"):
-		n = frappe.db.count("FCRM Note", {"name": ["like", "mig-note-%"]})
+	# 0b. Delete FCRM Notes that the Phase 3 notes reshape created — tagged
+	# via the `custom_source_crm_note` marker the reshape installs at
+	# runtime. User-created CRM-frontend FCRM Notes don't carry the
+	# marker and are left alone.
+	if (
+		frappe.db.exists("DocType", "FCRM Note")
+		and frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"})
+	):
+		n = frappe.db.count("FCRM Note", {"custom_source_crm_note": ["is", "set"]})
 		if n:
-			frappe.db.delete("FCRM Note", {"name": ["like", "mig-note-%"]})
+			frappe.db.delete("FCRM Note", {"custom_source_crm_note": ["is", "set"]})
 			report["FCRM Note (migrated)"] = n
 
 	# 0c. Delete ToDos that the Phase 3 assignments reshape synthesised
@@ -264,17 +266,19 @@ def reset_deal_only():
 			)
 			report["activity ToDo (assignment): CRM Deal → Opportunity"] = int(n)
 
-	# 0b. Migrated FCRM Notes whose parent is a CRM Deal.
-	if frappe.db.exists("DocType", "FCRM Note"):
-		n = frappe.db.count(
-			"FCRM Note",
-			{"name": ["like", "mig-note-%"], "reference_doctype": "CRM Deal"},
-		)
+	# 0b. Migrated FCRM Notes whose parent is a CRM Deal — identified by
+	# the `custom_source_crm_note` marker the reshape installs at runtime.
+	if (
+		frappe.db.exists("DocType", "FCRM Note")
+		and frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"})
+	):
+		filters = {
+			"custom_source_crm_note": ["is", "set"],
+			"reference_doctype": "CRM Deal",
+		}
+		n = frappe.db.count("FCRM Note", filters)
 		if n:
-			frappe.db.delete(
-				"FCRM Note",
-				{"name": ["like", "mig-note-%"], "reference_doctype": "CRM Deal"},
-			)
+			frappe.db.delete("FCRM Note", filters)
 			report["FCRM Note (CRM Deal, migrated)"] = n
 
 	# 0c. Open CRM-side ToDos pointing at CRM Deal (auto-todos from CRM

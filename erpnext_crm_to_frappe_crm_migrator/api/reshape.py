@@ -809,7 +809,38 @@ def _derive_note_title(custom_title: str | None, note_html: str | None) -> str:
 	return text[:80] or "Note"
 
 
-_MIGRATED_NOTE_NAME_PREFIX = "mig-note-"
+# Hidden marker installed on FCRM Note at runtime so the reset script can
+# distinguish migrator-created rows from user-created ones. Mirrors the
+# `custom_source_todo` pattern on CRM Task.
+_NOTE_MARKER_FIELD = "custom_source_crm_note"
+
+
+def _ensure_note_marker_field() -> None:
+	"""Install the hidden marker field on FCRM Note if not already present."""
+	if not frappe.db.exists("DocType", "FCRM Note"):
+		return
+	if frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": _NOTE_MARKER_FIELD}):
+		return
+	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+	create_custom_fields(
+		{
+			"FCRM Note": [
+				{
+					"fieldname": _NOTE_MARKER_FIELD,
+					"label": "Source ERPNext CRM Note",
+					"fieldtype": "Data",
+					"hidden": 1,
+					"no_copy": 1,
+					"read_only": 1,
+					"description": (
+						"ERPNext CRM Note.name this FCRM Note was migrated from. "
+						"Used by the migrator for idempotency / reset; safe to ignore."
+					),
+				}
+			]
+		},
+		update=True,
+	)
 
 
 def _resolve_source_note_title_field() -> str | None:
@@ -825,14 +856,49 @@ def _resolve_source_note_title_field() -> str | None:
 	return None
 
 
+# Source/target fields already handled by reshape_notes — exclude from
+# the scalar carry-through to avoid double-writing.
+_NOTE_RESERVED_FIELDS = {
+	"name", "parent", "parenttype", "parentfield", "idx",
+	"owner", "creation", "modified", "modified_by", "docstatus",
+	"_user_tags", "_comments", "_assign", "_liked_by",
+	"title", "content", "reference_doctype", "reference_docname",
+	"note", "added_by", "added_on",
+	"custom_title",  # source-side title shape, handled by title resolver
+}
+
+
+def _shared_scalar_note_fields(title_field: str | None) -> list[str]:
+	"""Same-name, non-Table fields present on BOTH `CRM Note` and `FCRM Note`.
+
+	Used to carry custom-field values (e.g. `custom_parent_note`) verbatim
+	from source rows into the migrated FCRM Note. Tables are deliberately
+	skipped — those are re-anchored by `_reanchor_note_children`.
+	"""
+	src_meta = frappe.get_meta("CRM Note")
+	tgt_meta = frappe.get_meta("FCRM Note")
+	tgt_names = {df.fieldname for df in tgt_meta.fields}
+	out: list[str] = []
+	for df in src_meta.fields:
+		if df.fieldname in _NOTE_RESERVED_FIELDS or df.fieldname == title_field:
+			continue
+		if df.fieldtype in ("Table", "Table MultiSelect"):
+			continue
+		if df.fieldtype in ("Tab Break", "Column Break", "Section Break", "HTML"):
+			continue
+		if df.fieldname in tgt_names:
+			out.append(df.fieldname)
+	return out
+
+
 def _reanchor_note_children() -> int:
 	"""Re-anchor child rows of any Table field on source CRM Note that has
 	a same-named, same-options Table field on FCRM Note.
 
-	Uses a JOIN against `tabFCRM Note` keyed off the `mig-note-<src_id>`
-	naming convention, so only rows whose corresponding FCRM Note has
-	already been created get re-anchored. Idempotent — once flipped,
-	rows no longer match `parenttype = 'CRM Note'`.
+	JOINs `tabFCRM Note` directly on `f.name = c.parent` — the migrator
+	preserves the source CRM Note's name as the FCRM Note's name, so the
+	parent reference resolves without translation. Idempotent — once
+	flipped, rows no longer match `parenttype = 'CRM Note'`.
 
 	Skips silently if the matching Table field doesn't exist on FCRM Note
 	yet (e.g. the customer hasn't installed the mirrored custom field on
@@ -858,12 +924,11 @@ def _reanchor_note_children() -> int:
 			f"""
 			SELECT COUNT(*)
 			FROM `tab{child_dt}` c
-			JOIN `tabFCRM Note` f
-			  ON f.name = CONCAT(%s, c.parent)
+			JOIN `tabFCRM Note` f ON f.name = c.parent
 			WHERE c.parenttype = 'CRM Note'
 			  AND c.parentfield = %s
 			""",
-			(_MIGRATED_NOTE_NAME_PREFIX, df.fieldname),
+			(df.fieldname,),
 		)
 		n = int(count_row[0][0]) if count_row else 0
 		if not n:
@@ -872,14 +937,12 @@ def _reanchor_note_children() -> int:
 		frappe.db.sql(
 			f"""
 			UPDATE `tab{child_dt}` c
-			JOIN `tabFCRM Note` f
-			  ON f.name = CONCAT(%s, c.parent)
-			SET c.parenttype = 'FCRM Note',
-			    c.parent = f.name
+			JOIN `tabFCRM Note` f ON f.name = c.parent
+			SET c.parenttype = 'FCRM Note'
 			WHERE c.parenttype = 'CRM Note'
 			  AND c.parentfield = %s
 			""",
-			(_MIGRATED_NOTE_NAME_PREFIX, df.fieldname),
+			(df.fieldname,),
 		)
 		total += n
 
@@ -892,10 +955,13 @@ def reshape_notes(source_doctype: str) -> dict:
 	target row.
 
 	Naming: the source `CRM Note` doctype uses `autoname=autoincrement`
-	(integer names), incompatible with FCRM Note's varchar names. We
-	derive a deterministic string name `mig-note-{source_id}` so re-runs
-	are idempotent (same source row → same FCRM Note) and the reset
-	script can identify migrated rows precisely.
+	(integer names). FCRM Note's `name` column is varchar(140) which
+	stores the stringified integer fine — the source name is preserved
+	verbatim so audit references (Comment, Version, etc.) that point at
+	the CRM Note by name continue to resolve after the activity rewrite
+	flips their `reference_doctype` from "CRM Note" to "FCRM Note".
+	The hidden `custom_source_crm_note` marker (installed at runtime)
+	tags migrator-created rows for the reset script.
 
 	Title resolution: prefers `custom_title` (rtcamp/frappe_crm_xt
 	convention) or `title` on source CRM Note when present; otherwise
@@ -924,13 +990,26 @@ def reshape_notes(source_doctype: str) -> dict:
 	if not frappe.db.exists("DocType", "FCRM Note"):
 		return result
 
+	_ensure_note_marker_field()
+
 	title_field = _resolve_source_note_title_field()
+
+	# Scalar carry-through: any non-Table field that exists with the same
+	# name on both CRM Note (source) and FCRM Note (target) — covers
+	# customisations like `custom_parent_note` that frappe_crm_xt mirrors
+	# on FCRM Note. The Table-typed customisations (e.g.
+	# `custom_note_attachments`) are handled separately by
+	# `_reanchor_note_children` after the bulk insert.
+	carry_fields = _shared_scalar_note_fields(title_field)
+
 	select_cols = (
 		"name, parent, owner, creation, modified, modified_by, docstatus, "
 		"note, added_by, added_on"
 	)
 	if title_field:
 		select_cols += f", `{title_field}` AS note_title"
+	for cf in carry_fields:
+		select_cols += f", `{cf}`"
 
 	rows = frappe.db.sql(
 		f"""
@@ -948,24 +1027,29 @@ def reshape_notes(source_doctype: str) -> dict:
 	migrated_targets = set(
 		frappe.db.sql_list(f"SELECT name FROM `tab{target_doctype}`")
 	)
-	existing_migrated = set(
+	# Identify already-migrated FCRM Notes by the marker field (mirror of
+	# the `custom_source_todo` pattern on CRM Task).
+	existing_markers = set(
 		frappe.db.sql_list(
-			"SELECT name FROM `tabFCRM Note` WHERE name LIKE %s",
-			(f"{_MIGRATED_NOTE_NAME_PREFIX}%",),
+			f"SELECT `{_NOTE_MARKER_FIELD}` FROM `tabFCRM Note` "
+			f"WHERE `{_NOTE_MARKER_FIELD}` IS NOT NULL"
 		)
 	)
 
 	target_cols = [
 		"name", "owner", "creation", "modified", "modified_by", "docstatus",
 		"title", "content", "reference_doctype", "reference_docname",
+		_NOTE_MARKER_FIELD,
+		*carry_fields,
 	]
 	to_insert: list[tuple] = []
 
 	for r in rows:
-		target_name = f"{_MIGRATED_NOTE_NAME_PREFIX}{r['name']}"
+		marker = str(r["name"])
+		target_name = marker  # preserve source name verbatim
 		key = f"FCRMNote:{target_name}"
 		try:
-			if target_name in existing_migrated:
+			if marker in existing_markers:
 				result["skipped"] += 1
 				continue
 			if r["parent"] not in migrated_targets:
@@ -990,8 +1074,10 @@ def reshape_notes(source_doctype: str) -> dict:
 				r.get("note") or "",
 				target_doctype,
 				r["parent"],
+				marker,
+				*(r.get(cf) for cf in carry_fields),
 			))
-			existing_migrated.add(target_name)
+			existing_markers.add(marker)
 		except Exception as e:
 			_bump_failed(result, key, e)
 
