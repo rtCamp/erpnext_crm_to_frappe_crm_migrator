@@ -544,18 +544,22 @@ def _ensure_lead_company_orgs(
 
 
 # ---------------------------------------------------------------------------
-# Customer → Prospect bridge for Opportunity-from-Customer rows
+# Customer → CRM Organization bridge for Opportunity-from-Customer rows
 # ---------------------------------------------------------------------------
 
-def _ensure_customer_prospects(source_doctype: str) -> dict[str, str]:
+def _ensure_customer_organizations(source_doctype: str) -> dict[str, str]:
 	"""For Opportunity rows where `opportunity_from = 'Customer'`, ensure
-	a Prospect exists for each referenced Customer (creating one from
-	Customer data if missing). Also creates the matching CRM Organization
-	since the Prospect step has already run by the time we reach
-	Opportunity in the dependency order.
+	a target-side CRM Organization exists for each referenced Customer,
+	lazy-created from Customer data when missing.
 
-	Returns `{customer_name: prospect_name}` — the chunk loop rewrites
-	`Opportunity.party_name` from Customer.name to Prospect.name so the
+	Strictly target-side: nothing is written to `tabProspect` or any other
+	source ERPNext doctype — the migrator must not pollute the source bench.
+	The bridged organization name defaults to `Customer.customer_name`
+	(falling back to `Customer.name` if customer_name is empty) so the
+	migrated CRM Deal carries the human-readable label.
+
+	Returns `{customer_name: org_name}` — the chunk loop rewrites
+	`Opportunity.party_name` from Customer.name to the org name so the
 	dynamic-link routing writes a valid Organization reference on
 	CRM Deal.
 	"""
@@ -585,54 +589,30 @@ def _ensure_customer_prospects(source_doctype: str) -> dict[str, str]:
 	if not customers:
 		return {}
 
-	existing_prospects = set(frappe.db.sql_list("SELECT name FROM `tabProspect`"))
 	existing_orgs = set(frappe.db.sql_list("SELECT name FROM `tabCRM Organization`"))
 
 	translation: dict[str, str] = {}
-	prospects_to_insert: list[tuple] = []
 	orgs_to_insert: list[tuple] = []
 
 	for cust in customers:
-		# Prospect.autoname = field:company_name → name = company_name.
-		# Prefer the human-readable customer_name; fall back to Customer.name
-		# if the field is empty so a CRM Organization always lands.
-		prospect_name = cust["customer_name"] or cust["name"]
-		translation[cust["name"]] = prospect_name
+		# CRM Organization autoname is field:organization_name; prefer the
+		# human-readable customer_name, fall back to Customer.name so an
+		# organization always lands.
+		org_name = cust["customer_name"] or cust["name"]
+		translation[cust["name"]] = org_name
 
-		if prospect_name not in existing_prospects:
-			prospects_to_insert.append((
-				prospect_name,
-				cust["owner"],
-				cust["creation"],
-				cust["modified"],
-				cust["modified_by"],
-				0,
-				prospect_name,
-			))
-			existing_prospects.add(prospect_name)
-
-		if prospect_name not in existing_orgs:
+		if org_name not in existing_orgs:
 			orgs_to_insert.append((
-				prospect_name,
+				org_name,
 				cust["owner"],
 				cust["creation"],
 				cust["modified"],
 				cust["modified_by"],
 				0,
-				prospect_name,
+				org_name,
 			))
-			existing_orgs.add(prospect_name)
+			existing_orgs.add(org_name)
 
-	if prospects_to_insert:
-		frappe.db.bulk_insert(
-			"Prospect",
-			fields=[
-				"name", "owner", "creation", "modified", "modified_by",
-				"docstatus", "company_name",
-			],
-			values=prospects_to_insert,
-			ignore_duplicates=True,
-		)
 	if orgs_to_insert:
 		frappe.db.bulk_insert(
 			"CRM Organization",
@@ -726,6 +706,18 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 			if tgt_col not in target_cols and target_meta.has_field(tgt_col):
 				target_cols.append(tgt_col)
 
+	# ERPNext-CRM integration tracker — Frappe CRM's
+	# erpnext_crm_settings.create_custom_fields_in_frappe_crm() installs
+	# `erpnext_customer` (Data) on CRM Deal so the deal records which
+	# ERPNext Customer it came from. Stash the original Customer.name on
+	# `opportunity_from='Customer'` deals before the party_name rewrite
+	# clobbers it.
+	wants_erpnext_customer = (
+		source_doctype == "Opportunity" and target_meta.has_field("erpnext_customer")
+	)
+	if wants_erpnext_customer and "erpnext_customer" not in target_cols:
+		target_cols.append("erpnext_customer")
+
 	# Source-name routing: the registry's `*_TO_CRM_*` dicts may map
 	# the source's `name` key to a target column (e.g. UTM Source.name →
 	# CRM Lead Source.source_name). `name` never reaches the locked Field
@@ -746,7 +738,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	# exist for every Customer referenced by an Opportunity. Returns a
 	# translation map used in the chunk loop to rewrite party_name from
 	# Customer.name to Prospect.name (= Customer.customer_name).
-	customer_to_prospect = _ensure_customer_prospects(source_doctype)
+	customer_to_organization = _ensure_customer_organizations(source_doctype)
 
 	# Lead-from Opportunity organization context: each Lead may be
 	# owned by a Prospect (via Prospect.leads child rows). The map
@@ -788,14 +780,20 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 		for src_row in rows:
 			try:
 				# Customer-from Opportunity: rewrite party_name to the
-				# Prospect name that _ensure_customer_prospects materialised
-				# so the dynamic-link routing writes a valid Organization
-				# reference on CRM Deal.
+				# CRM Organization name that _ensure_customer_organizations
+				# materialised so the dynamic-link routing writes a valid
+				# Organization reference on CRM Deal. Stash the original
+				# Customer.name into _erpnext_customer first so the
+				# erpnext_customer tracker on CRM Deal still records which
+				# ERPNext Customer the deal came from.
 				if (
-					customer_to_prospect
+					customer_to_organization
 					and src_row.get("opportunity_from") == "Customer"
 				):
-					translated = customer_to_prospect.get(src_row.get("party_name"))
+					original_customer = src_row.get("party_name")
+					if original_customer:
+						src_row["_erpnext_customer"] = original_customer
+					translated = customer_to_organization.get(original_customer)
 					if translated:
 						src_row["party_name"] = translated
 
@@ -998,6 +996,13 @@ def _build_target_row(
 		owning = (lead_to_prospect or {}).get(lead) or (lead_to_company or {}).get(lead)
 		if owning:
 			out["organization"] = owning
+
+	# 7. ERPNext-Customer tracker — when an Opportunity is
+	# `opportunity_from='Customer'` the chunk loop stashes the original
+	# Customer.name into `_erpnext_customer` before rewriting party_name
+	# to the bridged Prospect. Carry it through to the target column.
+	if "erpnext_customer" in target_cols and src_row.get("_erpnext_customer"):
+		out["erpnext_customer"] = src_row["_erpnext_customer"]
 
 	# Build the tuple in target_cols order. None for any column we didn't
 	# populate — the database default takes over (typically NULL).
