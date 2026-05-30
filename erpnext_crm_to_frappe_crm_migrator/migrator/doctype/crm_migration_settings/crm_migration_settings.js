@@ -33,6 +33,10 @@ function all_locked(frm) {
 	return SOURCE_DOCTYPES.every((dt) => is_locked(frm, dt));
 }
 
+function any_locked(frm) {
+	return SOURCE_DOCTYPES.some((dt) => is_locked(frm, dt));
+}
+
 function render_mapped_summary(frm, source_doctype) {
 	const slug = dt_to_slug(source_doctype);
 	const meta_field = `${slug}_mapped_meta`;
@@ -64,7 +68,9 @@ function render_mapped_summary(frm, source_doctype) {
 	const WARN_STYLE = "color:#a04000;font-weight:500";
 	const rows = mapped
 		.map((r) => {
-			const tgt = `${escape_html(r.source_field)} → <code>${escape_html(r.target_field)}</code>`;
+			const tgt = `${escape_html(r.source_field)} → <code>${escape_html(
+				r.target_field
+			)}</code>`;
 			const ctype = r.is_custom
 				? ` <span class="badge badge-info" style="font-size:10px">custom</span>`
 				: "";
@@ -80,7 +86,9 @@ function render_mapped_summary(frm, source_doctype) {
 		__("auto-mapped to") +
 		` <code>${escape_html(target)}</code>` +
 		(with_risk
-			? ` &middot; <span style="${WARN_STYLE}">${with_risk} ${__("with type-mismatch warnings")}</span>`
+			? ` &middot; <span style="${WARN_STYLE}">${with_risk} ${__(
+					"with type-mismatch warnings"
+			  )}</span>`
 			: "");
 
 	wrapper.html(
@@ -97,8 +105,9 @@ function apply_target_field_options(frm) {
 		const slug = dt_to_slug(dt);
 		const target_dt = frm.doc[`target_${slug}`];
 		const fields = cache[target_dt] || [];
-		const grid = frm.fields_dict[`${slug}_field_mapping`]
-			&& frm.fields_dict[`${slug}_field_mapping`].grid;
+		const grid =
+			frm.fields_dict[`${slug}_field_mapping`] &&
+			frm.fields_dict[`${slug}_field_mapping`].grid;
 		if (!grid) return;
 		grid.update_docfield_property("target_field", "options", fields.join("\n"));
 	});
@@ -106,7 +115,10 @@ function apply_target_field_options(frm) {
 
 function lock_one(frm, source_doctype) {
 	frappe.confirm(
-		__("Freeze the {0} mapping into CRM Migration Field Map? Any previously locked rows for {0} are replaced.", [source_doctype]),
+		__(
+			"Freeze the {0} mapping into CRM Migration Field Map? Any previously locked rows for {0} are replaced.",
+			[source_doctype]
+		),
 		async () => {
 			// If the user edited the table (set target_field, flipped action,
 			// etc.) without saving, persist it now — the server reads from
@@ -115,7 +127,7 @@ function lock_one(frm, source_doctype) {
 				try {
 					await frm.save();
 				} catch (e) {
-					return;  // save error already shown by Frappe
+					return; // save error already shown by Frappe
 				}
 			}
 			frappe.call({
@@ -126,7 +138,10 @@ function lock_one(frm, source_doctype) {
 				callback(r) {
 					if (!r.message || !r.message.ok) return;
 					frappe.show_alert({
-						message: __("Locked {0}: {1} fields.", [source_doctype, r.message.inserted]),
+						message: __("Locked {0}: {1} fields.", [
+							source_doctype,
+							r.message.inserted,
+						]),
 						indicator: "green",
 					});
 					frm.reload_doc();
@@ -138,7 +153,10 @@ function lock_one(frm, source_doctype) {
 
 function unlock_one(frm, source_doctype) {
 	frappe.confirm(
-		__("Unlock {0} so you can refresh and re-lock it? Existing CRM Migration Field Map rows for {0} are kept until the next lock.", [source_doctype]),
+		__(
+			"Unlock {0} so you can refresh and re-lock it? Existing CRM Migration Field Map rows for {0} are kept until the next lock.",
+			[source_doctype]
+		),
 		() => {
 			frappe.call({
 				method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.unlock_doctype",
@@ -152,10 +170,43 @@ function unlock_one(frm, source_doctype) {
 	);
 }
 
+function unlock_all(frm) {
+	const locked = SOURCE_DOCTYPES.filter((dt) => is_locked(frm, dt));
+	if (!locked.length) return;
+	frappe.confirm(
+		__(
+			"Unlock every locked tab ({0})? CRM Migration Field Map rows are kept until the next lock.",
+			[locked.join(", ")]
+		),
+		() => {
+			frappe.call({
+				method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.unlock_all_doctypes",
+				freeze: true,
+				freeze_message: __("Unlocking all tabs…"),
+				callback(r) {
+					if (!r.message || !r.message.ok) return;
+					const unlocked = r.message.unlocked || [];
+					frappe.show_alert({
+						message: __("Unlocked {0} tab(s): {1}", [
+							unlocked.length,
+							unlocked.join(", "),
+						]),
+						indicator: "green",
+					});
+					frm.reload_doc();
+				},
+			});
+		}
+	);
+}
+
 function start_run(frm, source_doctype) {
 	const label = source_doctype || __("all source doctypes");
 	frappe.confirm(
-		__("Start migration for {0}? Runs in the background; watch progress in CRM Migration Run.", [label]),
+		__(
+			"Start migration for {0}? Runs in the background; watch progress in CRM Migration Run.",
+			[label]
+		),
 		() => {
 			frappe.call({
 				method: "erpnext_crm_to_frappe_crm_migrator.api.runner.run_migration",
@@ -187,7 +238,9 @@ function start_cleanup(frm) {
 			if (!m.all_locked) {
 				frappe.msgprint({
 					title: __("Cannot clean up"),
-					message: __("Lock every tab first. Unlocked: {0}", [m.unlocked_tabs.join(", ")]),
+					message: __("Lock every tab first. Unlocked: {0}", [
+						m.unlocked_tabs.join(", "),
+					]),
 					indicator: "red",
 				});
 				return;
@@ -195,34 +248,52 @@ function start_cleanup(frm) {
 			if (!m.has_successful_run) {
 				frappe.msgprint({
 					title: __("Cannot clean up"),
-					message: __("No successful CRM Migration Run found. Run the migration to completion before cleanup."),
+					message: __(
+						"No successful CRM Migration Run found. Run the migration to completion before cleanup."
+					),
 					indicator: "red",
 				});
 				return;
 			}
 
-			const parents_html = (m.parents || []).map(
-				(p) => `<li><b>${escape_html(p.doctype)}</b> — ${p.count} rows</li>`
-			).join("") || `<li class="text-muted">${__("(no source rows found)")}</li>`;
+			const parents_html =
+				(m.parents || [])
+					.map((p) => `<li><b>${escape_html(p.doctype)}</b> — ${p.count} rows</li>`)
+					.join("") || `<li class="text-muted">${__("(no source rows found)")}</li>`;
 
-			const children_html = (m.children || []).map(
-				(c) => `<li><code>tab${escape_html(c.doctype)}</code> — ${c.count} rows ` +
-					`(parenttype ∈ ${escape_html(c.parenttypes.join(", "))})</li>`
-			).join("") || `<li class="text-muted">${__("(no child rows)")}</li>`;
+			const children_html =
+				(m.children || [])
+					.map(
+						(c) =>
+							`<li><code>tab${escape_html(c.doctype)}</code> — ${c.count} rows ` +
+							`(parenttype ∈ ${escape_html(c.parenttypes.join(", "))})</li>`
+					)
+					.join("") || `<li class="text-muted">${__("(no child rows)")}</li>`;
 
-			const skipped_html = (m.skipped || []).map(
-				(s) => `<li><code>${escape_html(s.doctype)}</code> (${s.count} rows) — ${escape_html(s.reason)}</li>`
-			).join("");
+			const skipped_html = (m.skipped || [])
+				.map(
+					(s) =>
+						`<li><code>${escape_html(s.doctype)}</code> (${
+							s.count
+						} rows) — ${escape_html(s.reason)}</li>`
+				)
+				.join("");
 
 			const body =
 				`<div style="font-size:13px">` +
-				`<p>${__("This will permanently delete the following ERPNext source data. <b>This is irreversible.</b>")}</p>` +
+				`<p>${__(
+					"This will permanently delete the following ERPNext source data. <b>This is irreversible.</b>"
+				)}</p>` +
 				`<h6 style="margin-top:14px">${__("Parent doctypes")}</h6>` +
 				`<ul style="padding-left:18px">${parents_html}</ul>` +
 				`<h6 style="margin-top:14px">${__("Child rows (deleted before parents)")}</h6>` +
 				`<ul style="padding-left:18px">${children_html}</ul>` +
-				`<p class="text-muted" style="margin-top:8px">${__("Contact + Address Dynamic Links were already re-pointed to the CRM-side equivalents during migration, so nothing to delete there.")}</p>` +
-				`<h6 style="margin-top:14px;color:#1a5490">${__("Left untouched (shared with other ERPNext modules)")}</h6>` +
+				`<p class="text-muted" style="margin-top:8px">${__(
+					"Contact + Address Dynamic Links were already re-pointed to the CRM-side equivalents during migration, so nothing to delete there."
+				)}</p>` +
+				`<h6 style="margin-top:14px;color:#1a5490">${__(
+					"Left untouched (shared with other ERPNext modules)"
+				)}</h6>` +
 				`<ul style="padding-left:18px;color:#1a5490">${skipped_html}</ul>` +
 				`</div>`;
 
@@ -262,7 +333,9 @@ function start_cleanup(frm) {
 								.join("");
 							frappe.msgprint({
 								title: __("Cleanup complete"),
-								message: `<ul style="padding-left:18px">${lines || "<li>(nothing to delete)</li>"}</ul>`,
+								message: `<ul style="padding-left:18px">${
+									lines || "<li>(nothing to delete)</li>"
+								}</ul>`,
 								indicator: "green",
 							});
 						},
@@ -277,8 +350,7 @@ function start_cleanup(frm) {
 
 function render_migrator_details(frm) {
 	const wrapper =
-		frm.fields_dict.migration_details_html
-		&& frm.fields_dict.migration_details_html.$wrapper;
+		frm.fields_dict.migration_details_html && frm.fields_dict.migration_details_html.$wrapper;
 	if (!wrapper) return;
 
 	wrapper.html(
@@ -292,8 +364,12 @@ function render_migrator_details(frm) {
 			const rows = (r.message.activity_doctypes || [])
 				.map((row) => {
 					const scope = row.scope
-						? `<span class="text-muted" style="font-size:11px">${escape_html(row.scope)}</span>`
-						: `<span class="text-muted" style="font-size:11px">${__("all rows pointing at a source doctype")}</span>`;
+						? `<span class="text-muted" style="font-size:11px">${escape_html(
+								row.scope
+						  )}</span>`
+						: `<span class="text-muted" style="font-size:11px">${__(
+								"all rows pointing at a source doctype"
+						  )}</span>`;
 					return (
 						`<tr><td><b>${escape_html(row.doctype)}</b></td>` +
 						`<td><code>${escape_html(row.field)}</code></td>` +
@@ -316,14 +392,22 @@ function render_migrator_details(frm) {
 				`<div style="padding:6px 0">
 					<h6>${__("Activity rewrite scope")}</h6>
 					<div class="text-muted" style="font-size:12px">
-						${__("The activity rewrite step changes the listed field on each doctype from ERPNext source values (Lead/Opportunity/Prospect/…) to the corresponding Frappe CRM values. Reference <i>names</i> are preserved during the core records migration, so only the doctype column changes. <b>Version</b> rows are included so the audit trail follows the migrated record.")}
+						${__(
+							"The activity rewrite step changes the listed field on each doctype from ERPNext source values (Lead/Opportunity/Prospect/…) to the corresponding Frappe CRM values. Reference <i>names</i> are preserved during the core records migration, so only the doctype column changes. <b>Version</b> rows are included so the audit trail follows the migrated record."
+						)}
 					</div>
 					${table}
 					<h6 style="margin-top:14px">${__("Additional migration side-effects")}</h6>
 					<ul class="text-muted" style="font-size:12px;padding-left:18px">
-						<li>${__("Native ERPNext notes (CRM Note children) become standalone <b>FCRM Note</b> docs anchored to the migrated CRM record. Any <code>custom_note_attachments</code> child rows are re-anchored to the new note.")}</li>
-						<li>${__("Content ToDos (those with a real description) are converted to <b>CRM Task</b> rows 1:1 with status mapped (Open → Todo, Closed → Done, Cancelled → Canceled; other statuses pass through).")}</li>
-						<li>${__("The <code>_assign</code> JSON cache on each migrated row is regenerated into <b>ToDo</b> rows so the assignment widget on the CRM doc page resolves correctly.")}</li>
+						<li>${__(
+							"Native ERPNext notes (CRM Note children) become standalone <b>FCRM Note</b> docs anchored to the migrated CRM record. Any <code>custom_note_attachments</code> child rows are re-anchored to the new note."
+						)}</li>
+						<li>${__(
+							"Content ToDos (those with a real description) are converted to <b>CRM Task</b> rows 1:1 with status mapped (Open → Todo, Closed → Done, Cancelled → Canceled; other statuses pass through)."
+						)}</li>
+						<li>${__(
+							"The <code>_assign</code> JSON cache on each migrated row is regenerated into <b>ToDo</b> rows so the assignment widget on the CRM doc page resolves correctly."
+						)}</li>
 					</ul>
 				</div>`
 			);
@@ -340,95 +424,123 @@ frappe.ui.form.on("CRM Migration Settings", {
 		// have to remember.
 
 		// --- Refresh Diff (skips locked tabs server-side) ---
-		frm.add_custom_button(__("Refresh Diff"), () => {
-			frm._target_fields_cache = null;
-			frappe.show_alert({ message: __("Scanning ERPNext doctypes…"), indicator: "blue" });
-			frappe.call({
-				method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.refresh_diff",
-				freeze: true,
-				freeze_message: __("Rebuilding field mapping tables…"),
-				callback(r) {
-					if (!r.message || !r.message.ok) return;
-					const summary = r.message.summary || {};
-					const lines = Object.entries(summary).map(([dt, s]) => {
-						if (s.locked) return `<li><b>${dt}</b>: <i>locked — left untouched</i></li>`;
-						if (s.skipped) return `<li>${dt}: <i>not installed — skipped</i></li>`;
-						return (
-							`<li><b>${dt}</b>: ${s.rows} fields ` +
-							`(${s.map} mapped, ${s.unresolved} need decision` +
-							(s.with_risk ? `, ${s.with_risk} flagged` : "") +
-							`) — ${s.row_count} source rows</li>`
-						);
-					});
-					frappe.msgprint({
-						title: __("Diff refreshed"),
-						message: `<ul style="padding-left:20px">${lines.join("")}</ul>`,
-						indicator: "green",
-					});
-					frm.reload_doc();
-				},
-			});
-		}, __("Mapping"));
+		frm.add_custom_button(
+			__("Refresh Diff"),
+			() => {
+				frm._target_fields_cache = null;
+				frappe.show_alert({
+					message: __("Scanning ERPNext doctypes…"),
+					indicator: "blue",
+				});
+				frappe.call({
+					method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.refresh_diff",
+					freeze: true,
+					freeze_message: __("Rebuilding field mapping tables…"),
+					callback(r) {
+						if (!r.message || !r.message.ok) return;
+						const summary = r.message.summary || {};
+						const lines = Object.entries(summary).map(([dt, s]) => {
+							if (s.locked)
+								return `<li><b>${dt}</b>: <i>locked — left untouched</i></li>`;
+							if (s.skipped) return `<li>${dt}: <i>not installed — skipped</i></li>`;
+							return (
+								`<li><b>${dt}</b>: ${s.rows} fields ` +
+								`(${s.map} mapped, ${s.unresolved} need decision` +
+								(s.with_risk ? `, ${s.with_risk} flagged` : "") +
+								`) — ${s.row_count} source rows</li>`
+							);
+						});
+						frappe.msgprint({
+							title: __("Diff refreshed"),
+							message: `<ul style="padding-left:20px">${lines.join("")}</ul>`,
+							indicator: "green",
+						});
+						frm.reload_doc();
+					},
+				});
+			},
+			__("Mapping")
+		);
+
+		// --- Unlock All (only when at least one tab is locked) ---
+		if (any_locked(frm)) {
+			frm.add_custom_button(__("Unlock All"), () => unlock_all(frm), __("Mapping"));
+		}
 
 		// --- Default: Skip All & Migrate (always visible — does locking too) ---
-		frm.add_custom_button(__("Default: Skip All & Migrate"), () => {
-			frappe.confirm(
-				__(
-					"This will: <ol><li>Refresh the diff for every unlocked tab</li>" +
-					"<li>Mark every unmapped field as <b>Skip</b></li>" +
-					"<li>Lock every unlocked tab</li>" +
-					"<li>Run the full migration in the background, including the activity rewrite</li></ol>" +
-					"Already-locked tabs are preserved. Continue?"
-				),
-				() => {
-					frappe.call({
-						method: "erpnext_crm_to_frappe_crm_migrator.api.runner.default_setup_and_run",
-						freeze: true,
-						freeze_message: __("Configuring defaults and enqueuing migration…"),
-						callback(r) {
-							if (!r.message || !r.message.ok) return;
-							const m = r.message;
-							frappe.show_alert({
-								message: __(
-									"Locked {0} tab(s) ({1} were already locked); migration enqueued: {2}",
-									[m.locked_now, m.already_locked, m.run],
-								),
-								indicator: "green",
-							});
-							if (m.run) {
-								frappe.set_route("Form", "CRM Migration Run", m.run);
-							}
-						},
-					});
-				}
-			);
-		}, __("Migration")).addClass("btn-primary");
-
-		// --- Run Migration (top-level): only when ALL tabs are locked ---
-		if (all_locked(frm)) {
-			frm.add_custom_button(__("Run Migration"), () => start_run(frm, null), __("Migration"));
-
-			frm.add_custom_button(__("Migrate Activity Records"), () => {
+		frm.add_custom_button(
+			__("Default: Skip All & Migrate"),
+			() => {
 				frappe.confirm(
-					__("Rewrite reference_doctype on Comments, ToDos, Notes, etc. that point at ERPNext source doctypes (Lead/Opportunity/Prospect/…) so they point at the Frappe CRM equivalents instead. Reference names are unchanged."),
+					__(
+						"This will: <ol><li>Refresh the diff for every unlocked tab</li>" +
+							"<li>Mark every unmapped field as <b>Skip</b></li>" +
+							"<li>Lock every unlocked tab</li>" +
+							"<li>Run the full migration in the background, including the activity rewrite</li></ol>" +
+							"Already-locked tabs are preserved. Continue?"
+					),
 					() => {
 						frappe.call({
-							method: "erpnext_crm_to_frappe_crm_migrator.api.runner.run_activity_only",
+							method: "erpnext_crm_to_frappe_crm_migrator.api.runner.default_setup_and_run",
 							freeze: true,
-							freeze_message: __("Enqueuing activity rewrite…"),
+							freeze_message: __("Configuring defaults and enqueuing migration…"),
 							callback(r) {
 								if (!r.message || !r.message.ok) return;
+								const m = r.message;
 								frappe.show_alert({
-									message: __("Activity rewrite enqueued: {0}", [r.message.run]),
+									message: __(
+										"Locked {0} tab(s) ({1} were already locked); migration enqueued: {2}",
+										[m.locked_now, m.already_locked, m.run]
+									),
 									indicator: "green",
 								});
-								frappe.set_route("Form", "CRM Migration Run", r.message.run);
+								if (m.run) {
+									frappe.set_route("Form", "CRM Migration Run", m.run);
+								}
 							},
 						});
 					}
 				);
-			}, __("Migration"));
+			},
+			__("Migration")
+		).addClass("btn-primary");
 
+		// --- Run Migration (top-level): only when ALL tabs are locked ---
+		if (all_locked(frm)) {
+			frm.add_custom_button(
+				__("Run Migration"),
+				() => start_run(frm, null),
+				__("Migration")
+			);
+
+			frm.add_custom_button(
+				__("Migrate Activity Records"),
+				() => {
+					frappe.confirm(
+						__(
+							"Rewrite reference_doctype on Comments, ToDos, Notes, etc. that point at ERPNext source doctypes (Lead/Opportunity/Prospect/…) so they point at the Frappe CRM equivalents instead. Reference names are unchanged."
+						),
+						() => {
+							frappe.call({
+								method: "erpnext_crm_to_frappe_crm_migrator.api.runner.run_activity_only",
+								freeze: true,
+								freeze_message: __("Enqueuing activity rewrite…"),
+								callback(r) {
+									if (!r.message || !r.message.ok) return;
+									frappe.show_alert({
+										message: __("Activity rewrite enqueued: {0}", [
+											r.message.run,
+										]),
+										indicator: "green",
+									});
+									frappe.set_route("Form", "CRM Migration Run", r.message.run);
+								},
+							});
+						}
+					);
+				},
+				__("Migration")
+			);
 		}
 
 		// --- Clean up ERPNext source data (destructive, post-migration) ---
@@ -461,8 +573,7 @@ frappe.ui.form.on("CRM Migration Settings", {
 		SOURCE_DOCTYPES.forEach((dt) => {
 			const slug = dt_to_slug(dt);
 			const table_field = `${slug}_field_mapping`;
-			const grid = frm.fields_dict[table_field]
-				&& frm.fields_dict[table_field].grid;
+			const grid = frm.fields_dict[table_field] && frm.fields_dict[table_field].grid;
 			if (!grid || grid._skip_button_added) return;
 			if (is_locked(frm, dt)) return;
 			grid.add_custom_button(__("Mark all as Skip"), () => {
@@ -495,8 +606,7 @@ frappe.ui.form.on("CRM Migration Settings", {
 		// --- Populate target_field Autocomplete per tab from target meta ---
 		if (!frm._target_fields_cache) {
 			frappe.call({
-				method:
-					"erpnext_crm_to_frappe_crm_migrator.api.mapping.get_target_doctype_fields",
+				method: "erpnext_crm_to_frappe_crm_migrator.api.mapping.get_target_doctype_fields",
 				callback(r) {
 					if (!r.message) return;
 					frm._target_fields_cache = r.message;
@@ -509,32 +619,80 @@ frappe.ui.form.on("CRM Migration Settings", {
 	},
 
 	// --- Per-tab Lock buttons ---
-	lead_lock_btn(frm) { lock_one(frm, "Lead"); },
-	opportunity_lock_btn(frm) { lock_one(frm, "Opportunity"); },
-	prospect_lock_btn(frm) { lock_one(frm, "Prospect"); },
-	territory_lock_btn(frm) { lock_one(frm, "Territory"); },
-	industry_type_lock_btn(frm) { lock_one(frm, "Industry Type"); },
-	utm_source_lock_btn(frm) { lock_one(frm, "UTM Source"); },
-	opportunity_lost_reason_lock_btn(frm) { lock_one(frm, "Opportunity Lost Reason"); },
-	item_lock_btn(frm) { lock_one(frm, "Item"); },
+	lead_lock_btn(frm) {
+		lock_one(frm, "Lead");
+	},
+	opportunity_lock_btn(frm) {
+		lock_one(frm, "Opportunity");
+	},
+	prospect_lock_btn(frm) {
+		lock_one(frm, "Prospect");
+	},
+	territory_lock_btn(frm) {
+		lock_one(frm, "Territory");
+	},
+	industry_type_lock_btn(frm) {
+		lock_one(frm, "Industry Type");
+	},
+	utm_source_lock_btn(frm) {
+		lock_one(frm, "UTM Source");
+	},
+	opportunity_lost_reason_lock_btn(frm) {
+		lock_one(frm, "Opportunity Lost Reason");
+	},
+	item_lock_btn(frm) {
+		lock_one(frm, "Item");
+	},
 
 	// --- Per-tab Unlock buttons ---
-	lead_unlock_btn(frm) { unlock_one(frm, "Lead"); },
-	opportunity_unlock_btn(frm) { unlock_one(frm, "Opportunity"); },
-	prospect_unlock_btn(frm) { unlock_one(frm, "Prospect"); },
-	territory_unlock_btn(frm) { unlock_one(frm, "Territory"); },
-	industry_type_unlock_btn(frm) { unlock_one(frm, "Industry Type"); },
-	utm_source_unlock_btn(frm) { unlock_one(frm, "UTM Source"); },
-	opportunity_lost_reason_unlock_btn(frm) { unlock_one(frm, "Opportunity Lost Reason"); },
-	item_unlock_btn(frm) { unlock_one(frm, "Item"); },
+	lead_unlock_btn(frm) {
+		unlock_one(frm, "Lead");
+	},
+	opportunity_unlock_btn(frm) {
+		unlock_one(frm, "Opportunity");
+	},
+	prospect_unlock_btn(frm) {
+		unlock_one(frm, "Prospect");
+	},
+	territory_unlock_btn(frm) {
+		unlock_one(frm, "Territory");
+	},
+	industry_type_unlock_btn(frm) {
+		unlock_one(frm, "Industry Type");
+	},
+	utm_source_unlock_btn(frm) {
+		unlock_one(frm, "UTM Source");
+	},
+	opportunity_lost_reason_unlock_btn(frm) {
+		unlock_one(frm, "Opportunity Lost Reason");
+	},
+	item_unlock_btn(frm) {
+		unlock_one(frm, "Item");
+	},
 
 	// --- Per-tab Migrate buttons ---
-	migrate_lead_btn(frm) { start_run(frm, "Lead"); },
-	migrate_opportunity_btn(frm) { start_run(frm, "Opportunity"); },
-	migrate_prospect_btn(frm) { start_run(frm, "Prospect"); },
-	migrate_territory_btn(frm) { start_run(frm, "Territory"); },
-	migrate_industry_type_btn(frm) { start_run(frm, "Industry Type"); },
-	migrate_utm_source_btn(frm) { start_run(frm, "UTM Source"); },
-	migrate_opportunity_lost_reason_btn(frm) { start_run(frm, "Opportunity Lost Reason"); },
-	migrate_item_btn(frm) { start_run(frm, "Item"); },
+	migrate_lead_btn(frm) {
+		start_run(frm, "Lead");
+	},
+	migrate_opportunity_btn(frm) {
+		start_run(frm, "Opportunity");
+	},
+	migrate_prospect_btn(frm) {
+		start_run(frm, "Prospect");
+	},
+	migrate_territory_btn(frm) {
+		start_run(frm, "Territory");
+	},
+	migrate_industry_type_btn(frm) {
+		start_run(frm, "Industry Type");
+	},
+	migrate_utm_source_btn(frm) {
+		start_run(frm, "UTM Source");
+	},
+	migrate_opportunity_lost_reason_btn(frm) {
+		start_run(frm, "Opportunity Lost Reason");
+	},
+	migrate_item_btn(frm) {
+		start_run(frm, "Item");
+	},
 });

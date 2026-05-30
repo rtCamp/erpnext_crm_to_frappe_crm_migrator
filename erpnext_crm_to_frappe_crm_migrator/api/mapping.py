@@ -30,6 +30,7 @@ FIELD_MAP_DOCTYPE = "CRM Migration Field Map"
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _settings_field_prefix(source_doctype: str) -> str:
 	"""Snake_case slug used in CRM Migration Settings field names.
 
@@ -58,23 +59,15 @@ def _types_compatible(src_df, tgt_df) -> tuple[bool, str]:
 	the row to Skip if they want.
 	"""
 	if src_df.fieldtype != tgt_df.fieldtype:
-		return False, (
-			f"type mismatch: {src_df.fieldtype} → {tgt_df.fieldtype}"
-		)
+		return False, (f"type mismatch: {src_df.fieldtype} → {tgt_df.fieldtype}")
 
 	if src_df.fieldtype == "Link":
 		if (src_df.options or "") != (tgt_df.options or ""):
-			return False, (
-				f"Link options differ: {src_df.options or '?'} "
-				f"→ {tgt_df.options or '?'}"
-			)
+			return False, (f"Link options differ: {src_df.options or '?'} → {tgt_df.options or '?'}")
 
 	if src_df.fieldtype in ("Table", "Table MultiSelect"):
 		if (src_df.options or "") != (tgt_df.options or ""):
-			return False, (
-				f"child table type differs: {src_df.options or '?'} "
-				f"→ {tgt_df.options or '?'}"
-			)
+			return False, (f"child table type differs: {src_df.options or '?'} → {tgt_df.options or '?'}")
 
 	return True, ""
 
@@ -187,10 +180,7 @@ def _build_row_for_field(src_df, source_doctype: str, target_doctype: str, sugge
 		tgt_df = target_meta.get_field(registry_target) if target_meta else None
 		if tgt_df is None:
 			row["action"] = ""
-			row["risk"] = (
-				f"registry target '{registry_target}' missing on "
-				f"{target_doctype} meta"
-			)
+			row["risk"] = f"registry target '{registry_target}' missing on {target_doctype} meta"
 			return row
 
 		row["target_field"] = registry_target
@@ -291,6 +281,7 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # whitelisted endpoints
 # ---------------------------------------------------------------------------
+
 
 @frappe.whitelist()
 def refresh_diff() -> dict:
@@ -409,7 +400,9 @@ def lock_doctype(source_doctype: str) -> dict:
 		fields = ", ".join(r.source_field for r in unresolved)
 		frappe.throw(
 			_("Set action (Map or Skip) on these {0} fields before locking {1}: {2}").format(
-				len(unresolved), source_doctype, fields,
+				len(unresolved),
+				source_doctype,
+				fields,
 			),
 			title=_("Action Required"),
 		)
@@ -441,13 +434,11 @@ def lock_doctype(source_doctype: str) -> dict:
 		target_to_sources.setdefault(row.target_field, []).append(row.source_field)
 	conflicts = {tgt: srcs for tgt, srcs in target_to_sources.items() if len(srcs) > 1}
 	if conflicts:
-		lines = [
-			f"<b>{tgt}</b> ← {', '.join(srcs)}"
-			for tgt, srcs in conflicts.items()
-		]
+		lines = [f"<b>{tgt}</b> ← {', '.join(srcs)}" for tgt, srcs in conflicts.items()]
 		frappe.throw(
 			_("Two source fields cannot write to the same target column. Pick one per target:")
-			+ "<br>" + "<br>".join(lines),
+			+ "<br>"
+			+ "<br>".join(lines),
 			title=_("Duplicate Target Mapping"),
 		)
 
@@ -597,6 +588,29 @@ def unlock_doctype(source_doctype: str) -> dict:
 
 
 @frappe.whitelist()
+def unlock_all_doctypes() -> dict:
+	"""Clear the lock flag on every currently-locked tab in a single save.
+
+	Mirrors `unlock_doctype` for each locked source — CRM Migration Field
+	Map rows stay intact so an in-flight job reads consistent state.
+	"""
+	frappe.has_permission(SETTINGS_DOCTYPE, "write", throw=True)
+
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	unlocked: list[str] = []
+	for source in SOURCE_DOCTYPES:
+		prefix = _settings_field_prefix(source)
+		if settings.get(f"{prefix}_locked"):
+			settings.set(f"{prefix}_locked", 0)
+			settings.set(f"{prefix}_locked_on", None)
+			unlocked.append(source)
+
+	if unlocked:
+		settings.save()
+	return {"ok": True, "unlocked": unlocked}
+
+
+@frappe.whitelist()
 def get_migrator_details() -> dict:
 	"""Return the activity doctypes the migrator rewrites.
 
@@ -610,13 +624,12 @@ def get_migrator_details() -> dict:
 	"""
 	from erpnext_crm_to_frappe_crm_migrator.api.activity import ACTIVITY_SPECS
 
-	rows = [
-		{"doctype": dt, "field": field_dt, "scope": ""}
-		for (dt, field_dt, _nf) in ACTIVITY_SPECS
-	]
-	rows.append({
-		"doctype": "ToDo",
-		"field": "reference_type",
-		"scope": "assignment-style rows only — content ToDos become CRM Tasks instead",
-	})
+	rows = [{"doctype": dt, "field": field_dt, "scope": ""} for (dt, field_dt, _nf) in ACTIVITY_SPECS]
+	rows.append(
+		{
+			"doctype": "ToDo",
+			"field": "reference_type",
+			"scope": "assignment-style rows only — content ToDos become CRM Tasks instead",
+		}
+	)
 	return {"activity_doctypes": rows}
