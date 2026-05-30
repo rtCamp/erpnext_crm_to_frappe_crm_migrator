@@ -175,6 +175,106 @@ function start_run(frm, source_doctype) {
 	);
 }
 
+function start_cleanup(frm) {
+	frappe.call({
+		method: "erpnext_crm_to_frappe_crm_migrator.api.cleanup.get_cleanup_preview",
+		freeze: true,
+		freeze_message: __("Scanning source tables…"),
+		callback(r) {
+			if (!r.message || !r.message.ok) return;
+			const m = r.message;
+
+			if (!m.all_locked) {
+				frappe.msgprint({
+					title: __("Cannot clean up"),
+					message: __("Lock every tab first. Unlocked: {0}", [m.unlocked_tabs.join(", ")]),
+					indicator: "red",
+				});
+				return;
+			}
+			if (!m.has_successful_run) {
+				frappe.msgprint({
+					title: __("Cannot clean up"),
+					message: __("No successful CRM Migration Run found. Run the migration to completion before cleanup."),
+					indicator: "red",
+				});
+				return;
+			}
+
+			const parents_html = (m.parents || []).map(
+				(p) => `<li><b>${escape_html(p.doctype)}</b> — ${p.count} rows</li>`
+			).join("") || `<li class="text-muted">${__("(no source rows found)")}</li>`;
+
+			const children_html = (m.children || []).map(
+				(c) => `<li><code>tab${escape_html(c.doctype)}</code> — ${c.count} rows ` +
+					`(parenttype ∈ ${escape_html(c.parenttypes.join(", "))})</li>`
+			).join("") || `<li class="text-muted">${__("(no child rows)")}</li>`;
+
+			const skipped_html = (m.skipped || []).map(
+				(s) => `<li><code>${escape_html(s.doctype)}</code> (${s.count} rows) — ${escape_html(s.reason)}</li>`
+			).join("");
+
+			const body =
+				`<div style="font-size:13px">` +
+				`<p>${__("This will permanently delete the following ERPNext source data. <b>This is irreversible.</b>")}</p>` +
+				`<h6 style="margin-top:14px">${__("Parent doctypes")}</h6>` +
+				`<ul style="padding-left:18px">${parents_html}</ul>` +
+				`<h6 style="margin-top:14px">${__("Child rows (deleted before parents)")}</h6>` +
+				`<ul style="padding-left:18px">${children_html}</ul>` +
+				`<p class="text-muted" style="margin-top:8px">${__("Contact + Address Dynamic Links were already re-pointed to the CRM-side equivalents during migration, so nothing to delete there.")}</p>` +
+				`<h6 style="margin-top:14px;color:#1a5490">${__("Left untouched (shared with other ERPNext modules)")}</h6>` +
+				`<ul style="padding-left:18px;color:#1a5490">${skipped_html}</ul>` +
+				`</div>`;
+
+			const dialog = new frappe.ui.Dialog({
+				title: __("Clean up ERPNext source data"),
+				size: "large",
+				fields: [
+					{ fieldtype: "HTML", fieldname: "preview", options: body },
+					{
+						fieldtype: "Data",
+						fieldname: "confirm_text",
+						label: __("Type DELETE to confirm"),
+						reqd: 1,
+					},
+				],
+				primary_action_label: __("Delete"),
+				primary_action({ confirm_text }) {
+					if (confirm_text !== "DELETE") {
+						frappe.msgprint({
+							title: __("Wrong confirmation"),
+							message: __("Type the word DELETE exactly to proceed."),
+							indicator: "orange",
+						});
+						return;
+					}
+					dialog.hide();
+					frappe.call({
+						method: "erpnext_crm_to_frappe_crm_migrator.api.cleanup.cleanup_source_data",
+						args: { confirm: "DELETE" },
+						freeze: true,
+						freeze_message: __("Deleting source data…"),
+						callback(r2) {
+							if (!r2.message || !r2.message.ok) return;
+							const deleted = r2.message.deleted || {};
+							const lines = Object.entries(deleted)
+								.map(([dt, n]) => `<li>${escape_html(dt)} — ${n}</li>`)
+								.join("");
+							frappe.msgprint({
+								title: __("Cleanup complete"),
+								message: `<ul style="padding-left:18px">${lines || "<li>(nothing to delete)</li>"}</ul>`,
+								indicator: "green",
+							});
+						},
+					});
+				},
+			});
+			dialog.get_primary_btn().addClass("btn-danger");
+			dialog.show();
+		},
+	});
+}
+
 function render_migrator_details(frm) {
 	const wrapper =
 		frm.fields_dict.migration_details_html
@@ -328,6 +428,17 @@ frappe.ui.form.on("CRM Migration Settings", {
 					}
 				);
 			}, __("Migration"));
+
+		}
+
+		// --- Clean up ERPNext source data (destructive, post-migration) ---
+		// Top-level red button so users don't fire it by accident from a
+		// submenu. Visible only when every tab is locked AND a successful
+		// migration run exists — the cleanup endpoint re-checks server-side.
+		if (all_locked(frm)) {
+			frm.add_custom_button(__("Clean up ERPNext source data"), () => {
+				start_cleanup(frm);
+			}).addClass("btn-danger");
 		}
 
 		// --- Per-tab read-only state for table when its tab is locked ---

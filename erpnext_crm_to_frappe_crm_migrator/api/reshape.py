@@ -53,94 +53,63 @@ def _bump_failed(result: dict, key: str, error: Exception) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1. Prospect contacts → CRM Organization Contact.links
+# 1. Dynamic Link repoint (Contact.links + Address.links)
 # ---------------------------------------------------------------------------
 
-def reshape_prospect_contacts() -> dict:
-	"""For every Contact.links row pointing at Prospect, add an equivalent
-	row pointing at CRM Organization with the same link_name (preserved by
-	Phase 2). Idempotent — duplicates are skipped.
+# source → target doctype renames for Contact.links / Address.links repoint.
+# Source name == target name (Phase-2 source-meta preservation), so only
+# link_doctype needs to change — link_name is left alone.
+_DYNAMIC_LINK_REPOINTS: dict[str, str] = {
+	"Lead": "CRM Lead",
+	"Opportunity": "CRM Deal",
+	"Prospect": "CRM Organization",
+}
+
+# parenttypes whose `links` Table holds the Dynamic Link rows we care about.
+_DYNAMIC_LINK_PARENTS: tuple[str, ...] = ("Contact", "Address")
+
+
+def reshape_dynamic_links() -> dict:
+	"""Re-point `tabDynamic Link` rows on Contact + Address from the
+	ERPNext source doctypes (Lead / Opportunity / Prospect) to their
+	Frappe CRM equivalents.
+
+	One UPDATE per (parenttype × source) combination — 6 total. `link_name`
+	is preserved verbatim because Phase 2 keeps source `name` on the
+	target row, so the linkage continues to resolve against the migrated
+	CRM-side record. Idempotent — once flipped, the WHERE filter matches
+	no rows.
+
+	Replaces the earlier "ADD new Contact.links rows pointing at CRM
+	Organization" pattern, which doubled the dataset and only covered
+	Contact-side Prospect linkages. Repointing covers all three source
+	doctypes for both Contact and Address sides in one shot, and leaves
+	no orphan Dynamic Link rows after the post-migration cleanup deletes
+	the source doctype rows.
 	"""
 	result = _empty_result()
 
-	# `tabContact` doesn't have a separate child table; Dynamic Link rows
-	# are themselves the child rows under tabDynamic Link with parent =
-	# Contact name.
-	prospect_links = frappe.db.sql(
-		"""
-		SELECT name, parent, link_name
-		FROM `tabDynamic Link`
-		WHERE parenttype = 'Contact'
-		  AND parentfield = 'links'
-		  AND link_doctype = 'Prospect'
-		""",
-		as_dict=True,
-	)
-	if not prospect_links:
-		return result
-
-	# Pre-fetch every CRM Organization-linked row so we can dedupe in O(1).
-	existing = frappe.db.sql(
-		"""
-		SELECT parent, link_name
-		FROM `tabDynamic Link`
-		WHERE parenttype = 'Contact'
-		  AND parentfield = 'links'
-		  AND link_doctype = 'CRM Organization'
-		""",
-		as_dict=True,
-	)
-	existing_set = {(r["parent"], r["link_name"]) for r in existing}
-
-	# Verify the target CRM Organization exists before linking; if not,
-	# skip — the user hasn't migrated that Prospect yet.
-	migrated_orgs = set(frappe.db.sql_list("SELECT name FROM `tabCRM Organization`"))
-
-	to_insert: list[tuple] = []
-	for row in prospect_links:
-		key = f"Contact:{row['parent']} → {row['link_name']}"
-		try:
-			if (row["parent"], row["link_name"]) in existing_set:
-				result["skipped"] += 1
-				continue
-			if row["link_name"] not in migrated_orgs:
-				# Target Organization not migrated yet — skip silently; a
-				# later re-run will catch it.
-				result["skipped"] += 1
-				continue
-			to_insert.append(
-				(
-					frappe.generate_hash(length=10),  # name
-					row["parent"],                     # parent (Contact name)
-					"Contact",                         # parenttype
-					"links",                           # parentfield
-					"CRM Organization",                # link_doctype
-					row["link_name"],                  # link_name
-				)
-			)
-			existing_set.add((row["parent"], row["link_name"]))
-		except Exception as e:
-			_bump_failed(result, key, e)
-
-	if to_insert:
-		try:
-			frappe.db.bulk_insert(
+	for parenttype in _DYNAMIC_LINK_PARENTS:
+		for src_dt, tgt_dt in _DYNAMIC_LINK_REPOINTS.items():
+			matched = frappe.db.count(
 				"Dynamic Link",
-				fields=["name", "parent", "parenttype", "parentfield",
-					"link_doctype", "link_name"],
-				values=to_insert,
-				ignore_duplicates=True,
+				{"parenttype": parenttype, "link_doctype": src_dt},
 			)
-			result["ok"] += len(to_insert)
-		except Exception as e:
-			result["failed"] += len(to_insert)
-			result["last_error"] = f"bulk_insert Dynamic Link: {e}"[:500]
-			for v in to_insert[: SAMPLE_FAILED_LIMIT - len(result["sample_failed"])]:
-				result["sample_failed"].append(f"Contact:{v[1]} → {v[5]}")
-			frappe.log_error(
-				title="Migrator reshape: Prospect contacts bulk_insert",
-				message=frappe.get_traceback(),
-			)
+			if not matched:
+				continue
+
+			try:
+				frappe.db.sql(
+					"""
+					UPDATE `tabDynamic Link`
+					SET link_doctype = %s
+					WHERE parenttype = %s AND link_doctype = %s
+					""",
+					(tgt_dt, parenttype, src_dt),
+				)
+				result["ok"] += int(matched)
+			except Exception as e:
+				_bump_failed(result, f"{parenttype}.links: {src_dt} → {tgt_dt}", e)
 
 	frappe.db.commit()
 	return result
@@ -1677,7 +1646,6 @@ def reshape_for(source_doctype: str) -> dict:
 		_merge(totals, reshape_assignments(source_doctype))
 		_merge(totals, reshape_tasks(source_doctype))
 	elif source_doctype == "Prospect":
-		_merge(totals, reshape_prospect_contacts())
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
 		_merge(totals, reshape_tasks(source_doctype))
@@ -1689,6 +1657,10 @@ def reshape_for(source_doctype: str) -> dict:
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
 		_merge(totals, reshape_tasks(source_doctype))
+		# Dynamic Link repoint runs once on the last source step (after
+		# Lead/Prospect have landed their target rows). Covers Contact +
+		# Address linkages for all three source doctypes in one pass.
+		_merge(totals, reshape_dynamic_links())
 
 	return totals
 
