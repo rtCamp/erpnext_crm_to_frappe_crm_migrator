@@ -1,27 +1,9 @@
-"""Phase 3 — schema reshape between source and target child tables.
+"""Schema reshape between source and target child tables.
 
-The Phase-2 runner skips Table-type fields entirely; Phase 3 fills them
-in for the three reshape pairs that need a structural change:
-
-  1. Prospect contacts → CRM Organization Contact.links (Dynamic Link).
-  2. Opportunity Items (Item refs) → CRM Products child rows, with
-     auto-create of any missing CRM Product on demand.
-  3. Opportunity contact_person + Contact.links → CRM Deal.contacts
-     child rows (multi-contact when ERPNext Contacts are linked to the
-     Prospect via Dynamic Link), plus backfill of CRM Deal.contact
-     scalar if Phase 2 didn't set it.
-  4. Opportunity.lost_reasons → CRM Deal.lost_reason scalar (first row)
-     + lost_notes append (extras), with auto-create of missing
-     CRM Lost Reason on demand.
-
-Per the user's directive: lazy-create dependent records on demand
-rather than failing — these reshapes work even if the user marked
-Item / Lost Reason as Skip during the lock phase.
-
-Each reshape returns a dict {ok, skipped, failed, last_error,
-sample_failed} that the runner folds into the CRM Migration Run Step
-counters. Per-row exceptions are caught and counted; the orchestrator
-never stops on a bad row.
+Each `reshape_*` function returns `{ok, skipped, failed, last_error,
+sample_failed}` that the runner folds into the CRM Migration Run Step
+counters. See `docs/architecture.md` for the reshape pipeline and
+`docs/decisions.md` for the bulk_insert / source-meta / repoint rationale.
 """
 
 from __future__ import annotations
@@ -57,8 +39,8 @@ def _bump_failed(result: dict, key: str, error: Exception) -> None:
 # ---------------------------------------------------------------------------
 
 # source → target doctype renames for Contact.links / Address.links repoint.
-# Source name == target name (Phase-2 source-meta preservation), so only
-# link_doctype needs to change — link_name is left alone.
+# Source name == target name (the core records runner preserves source
+# meta), so only link_doctype needs to change — link_name is left alone.
 _DYNAMIC_LINK_REPOINTS: dict[str, str] = {
 	"Lead": "CRM Lead",
 	"Opportunity": "CRM Deal",
@@ -75,9 +57,9 @@ def reshape_dynamic_links() -> dict:
 	Frappe CRM equivalents.
 
 	One UPDATE per (parenttype × source) combination — 6 total. `link_name`
-	is preserved verbatim because Phase 2 keeps source `name` on the
-	target row, so the linkage continues to resolve against the migrated
-	CRM-side record. Idempotent — once flipped, the WHERE filter matches
+	is preserved verbatim because the core records runner keeps source
+	`name` on the target row, so the linkage continues to resolve
+	against the migrated CRM-side record. Idempotent — once flipped, the WHERE filter matches
 	no rows.
 
 	Replaces the earlier "ADD new Contact.links rows pointing at CRM
@@ -249,7 +231,8 @@ def reshape_opportunity_items() -> dict:
 				result["skipped"] += 1
 				continue
 
-			# Lazy-create CRM Product if missing (Phase 2 may have skipped Item)
+			# Lazy-create CRM Product if missing — the user may have
+			# marked Item as Skip during the lock phase.
 			item_code = item.get("item_code")
 			if item_code:
 				_, err = _ensure_crm_product(item_code, crm_product_cache)
@@ -558,8 +541,8 @@ def reshape_opportunity_contacts() -> dict:
 				_bump_failed(result, f"backfill CRM Deal.contact (chunk @ {offset})", e)
 
 	# Mark the matching row primary if no row ended up flagged (when the row
-	# was created on a previous run with is_primary=0 because Phase 2 hadn't
-	# set contact_person yet).
+	# was created on a previous run with is_primary=0 because the core
+	# records runner hadn't set contact_person yet).
 	for d in deals:
 		if not d["contact_person"]:
 			continue
@@ -942,9 +925,9 @@ def reshape_notes(source_doctype: str) -> dict:
 	FCRM Note row.
 
 	Source-meta preservation: owner defaults to `added_by`, creation
-	defaults to `added_on`. Phase 4 activity rewrite is irrelevant for
-	these notes (their reference_doctype is set to a CRM target on
-	creation).
+	defaults to `added_on`. The activity rewrite step is irrelevant for
+	these notes — their reference_doctype is already set to a CRM
+	target on creation.
 
 	Skipped silently if the migrated parent doesn't exist on the target
 	side yet (e.g. user hasn't run the parent step), so a partial
@@ -1023,7 +1006,7 @@ def reshape_notes(source_doctype: str) -> dict:
 				continue
 			if r["parent"] not in migrated_targets:
 				# Parent CRM target row not migrated yet — skip; a
-				# later re-run will catch this once Phase 2 runs.
+				# later re-run will catch this once the parent step runs.
 				result["skipped"] += 1
 				continue
 
@@ -1094,19 +1077,20 @@ def reshape_notes(source_doctype: str) -> dict:
 
 def reshape_assignments(source_doctype: str) -> dict:
 	"""Build ToDo rows on the CRM target side from the `_assign` JSON
-	cache that Phase 2 carried over from the source row.
+	cache that the core records runner carried over from the source row.
 
 	Why: the CRM frontend's detail page reads `tabToDo` to render the
 	assignment widget — `_assign` alone is enough for the list view but
 	not for the detail page. On many ERPNext sites the source `_assign`
 	cache was populated without matching ToDo rows (e.g. via direct DB
 	writes), or any source ToDos may have been deleted before
-	migration. Phase 4 only *rewrites* existing ToDos; this reshape
-	*creates* them from the cache so the detail-page widget has data.
+	migration. The activity rewrite step only *rewrites* existing ToDos;
+	this reshape *creates* them from the cache so the detail-page widget
+	has data.
 
 	Idempotent: skips when an Open ToDo already exists for the same
-	(reference_type, reference_name, allocated_to) — covers the
-	overlap with Phase 4-rewritten ToDos.
+	(reference_type, reference_name, allocated_to) — covers the overlap
+	with activity-rewritten ToDos.
 	"""
 	import json
 
@@ -1133,8 +1117,8 @@ def reshape_assignments(source_doctype: str) -> dict:
 	# rewrite later flips source assignment ToDos from <source> to <target>,
 	# so a source-side row blocks duplication just as well as a target-side
 	# one — including both here is what makes the dedup correct regardless
-	# of step ordering. Source name == target name (preserved by Phase 2),
-	# so the same `reference_name` keys both sides.
+	# of step ordering. Source name == target name (preserved by the
+	# core records runner), so the same `reference_name` keys both sides.
 	existing = set(
 		frappe.db.sql(
 			"""
@@ -1555,7 +1539,8 @@ def reshape_opportunity_stage_logs() -> dict:
 	in `tabCRM Status Change Log` (different child doctype, so this is a
 	reshape, not a parenttype re-anchor). The two doctypes share six
 	useful columns — those are copied verbatim. Parent (deal name) is
-	preserved via the source-meta-preservation policy in Phase 2.
+	preserved via the source-meta-preservation policy in the core
+	records runner.
 
 	Idempotent: target rows are named `mig-stagelog-<source_name>` so
 	re-runs hit the same row + ignore_duplicates skip.

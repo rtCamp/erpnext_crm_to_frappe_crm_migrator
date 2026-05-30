@@ -1,13 +1,7 @@
-"""Post-migration cleanup — delete ERPNext-side CRM source data.
-
-Runs after a successful migration to wipe the original source rows
-(`tabLead`, `tabOpportunity`, `tabProspect`, `tabOpportunity Lost Reason`)
-and their children. Strictly opt-in via the Settings-form button —
-never triggered automatically.
-
-Doctypes shared with other ERPNext modules (Item, Territory, Industry
-Type, UTM Source) are deliberately **not** included: deleting those
-would break Customer, Sales Invoice, Stock, and other unrelated areas.
+"""Post-migration cleanup — delete ERPNext-side CRM source data
+(Lead/Opportunity/Prospect/Lost Reason + children) once migration is
+verified complete. Opt-in via the Settings-form button. See
+`docs/dev.md`.
 """
 
 from __future__ import annotations

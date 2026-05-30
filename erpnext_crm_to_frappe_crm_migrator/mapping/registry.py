@@ -193,10 +193,10 @@ SKIP_FIELDS = {
 ALL_SKIP_FIELDS = FRAMEWORK_FIELDS | SKIP_FIELDS
 
 
-# Source-side fields whose data is migrated via Phase-3 reshape, not via
-# a column rename in the locked Field Map. Hidden from the per-tab
-# decision table so the user doesn't have to resolve a row that's
-# already covered. Keyed by source doctype → set of fieldnames.
+# Source-side fields whose data is migrated via an `api/reshape.py`
+# function instead of a column rename in the locked Field Map. Hidden
+# from the per-tab decision table so the user doesn't have to resolve
+# a row that's already covered. Keyed by source doctype → fieldnames.
 RESHAPE_HANDLED_FIELDS: dict[str, set[str]] = {
 	"Opportunity": {
 		# Free-form lost-reason text — folded into CRM Deal.lost_notes by

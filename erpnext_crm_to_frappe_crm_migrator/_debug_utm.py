@@ -1,4 +1,4 @@
-"""TEMP — synchronously run UTM Source migration step."""
+"""Dev helper — synchronously run the UTM Source migration step. See `docs/dev.md`."""
 
 import frappe
 

@@ -1,19 +1,8 @@
 """Whitelisted endpoints powering the CRM Migration Settings UI.
 
-`refresh_diff` rebuilds the per-tab data on the Single `CRM Migration
-Settings` doc by walking each ERPNext source doctype's meta, suggesting
-a target field via the registry or by exact-name match, and flagging
-anything that needs human attention. Auto-mapped rows go to a hidden
-Long Text field as JSON (rendered by JS as an HTML summary); only rows
-that need user input land in the editable table — a blank Action column
-is the "needs decision" state until the user picks Map or Skip.
-
-Locking is per-tab — `lock_doctype(source_doctype)` validates and
-freezes the resolved entries for one source into the `CRM Migration
-Field Map` doctype so the runner can consume a stable 4-column table.
-A locked tab is skipped by `refresh_diff` (its data is preserved).
-`unlock_doctype(source_doctype)` clears the lock flag without removing
-the frozen Field Map rows.
+`refresh_diff` rebuilds the per-tab diff; `lock_doctype` / `unlock_doctype`
+control per-tab freeze state. See `docs/mapping.md` for the resolution
+order and routing mechanisms.
 """
 
 from __future__ import annotations
@@ -158,7 +147,7 @@ def _build_row_for_field(src_df, source_doctype: str, target_doctype: str, sugge
 
 	Dynamic-Link source fields (e.g. Opportunity.party_name) get a
 	registry-style mapping plus a runtime-override risk note — the
-	Phase 2 runner reroutes the value at write time based on the
+	core records runner reroutes the value at write time based on the
 	companion controller field (e.g. opportunity_from).
 	"""
 	target_meta = _safe_get_meta(target_doctype)
@@ -246,17 +235,18 @@ def _build_rows_for_source(source_doctype: str) -> list[dict]:
 		if df.fieldname in ALL_SKIP_FIELDS:
 			continue
 		# Table / Table MultiSelect fields can't be column-mapped to a
-		# single target field. Phase 2's _reanchor_shared_children moves
-		# rows for same-schema Tables (e.g. status_change_log) directly
-		# from source meta; Phase 3 reshape handles structural mismatches
-		# (Opportunity Item → CRM Products, lost_reasons → lost_reason).
-		# Hiding them keeps the diff focused on real column mappings.
+		# single target field. The core runner's
+		# `_reanchor_shared_children` moves rows for same-schema Tables
+		# (e.g. status_change_log) directly from source meta; reshape
+		# functions handle structural mismatches (Opportunity Item →
+		# CRM Products, lost_reasons → lost_reason). Hiding Tables here
+		# keeps the diff focused on real column mappings.
 		if df.fieldtype in ("Table", "Table MultiSelect"):
 			continue
-		# Source fields whose data lands on the target via a Phase-3
-		# reshape (e.g. Opportunity.order_lost_reason → CRM Deal.lost_notes
-		# via reshape_opportunity_lost_reasons) — hide so the user isn't
-		# asked to resolve a row that's already covered.
+		# Source fields whose data lands on the target via a reshape
+		# (e.g. Opportunity.order_lost_reason → CRM Deal.lost_notes
+		# via reshape_opportunity_lost_reasons) — hide so the user
+		# isn't asked to resolve a row that's already covered.
 		if df.fieldname in reshape_handled:
 			continue
 		rows.append(_build_row_for_field(df, source_doctype, target_doctype, suggestions))

@@ -1,10 +1,6 @@
-"""One-shot — dedup _assign / _user_tags / _liked_by JSON lists on already-
-migrated CRM target rows. The runner now dedups at write time, but rows
-written before that fix may still carry duplicate entries.
-
-Run:
-    bench --site crm.localhost execute \
-        erpnext_crm_to_frappe_crm_migrator._dedup_assign.run
+"""Dev helper — retroactive dedup of `_assign` / `_user_tags` / `_liked_by`
+JSON lists on already-migrated CRM target rows. Idempotent. See
+`docs/dev.md`. Dev/test only.
 """
 
 import json

@@ -1,11 +1,6 @@
-"""TEMP — synchronously run the Opportunity migration step and print errors.
-
-Run via:
-    bench --site crm.localhost execute \
-        erpnext_crm_to_frappe_crm_migrator._debug_opp.run_inline
-
-Calls the orchestrator inline (skipping enqueue), then prints the resulting
-Run record + recent Error Log entries the migrator wrote.
+"""Dev helper — synchronously run the Opportunity migration step
+(bypasses enqueue) and print the Run summary + recent Error Log
+entries. See `docs/dev.md`. Dev/test only.
 """
 
 import frappe

@@ -1,29 +1,9 @@
-"""TEMP — reset CRM target data so a migration can be re-run.
+"""Dev helper — reset CRM target data so a migration can be re-run.
 
-Run via:
-    bench --site crm.localhost execute \\
-        erpnext_crm_to_frappe_crm_migrator._reset_test_data.reset_all
-
-DESTRUCTIVE on the target site — wipes every CRM Lead, CRM Deal,
-CRM Organization, CRM Territory, CRM Industry, CRM Lead Source,
-CRM Lost Reason, CRM Product, plus their child rows, plus
-Phase-3-added Dynamic Links and the CRM Migration Run history.
-
-REVERTS Phase 4 — every activity record (FCRM Note, CRM Task,
-CRM Call Log, CRM Notification, Comment, Communication, File, ToDo)
-whose reference_doctype-equivalent field points at a CRM target
-doctype is rewritten back to its ERPNext source counterpart, so the
-next migration run has source-pointing rows to rewrite again.
-
-PRESERVED (so the user's mapping work survives across reset cycles):
-  - CRM Migration Field Map rows (the locked mapping output)
-  - Per-tab editable table, JSON mapped_meta, lock state on the
-    CRM Migration Settings Single doc
-
-Source ERPNext doctypes (Lead/Opportunity/Prospect/etc.) are NOT
-touched.
-
-Intended for dev/test cycles only — DO NOT run on production.
+Wipes every CRM Lead / Deal / Organization / lookup row + their
+children, reverts the activity rewrite, drops the Run history.
+Preserves the locked Field Map and per-tab Settings state. Source
+ERPNext doctypes are NOT touched. See `docs/dev.md`. Dev/test only.
 """
 
 import frappe
@@ -52,15 +32,16 @@ TARGET_CHILDREN = [
 	("CRM Rolling Response Time", ["CRM Lead", "CRM Deal"]),
 ]
 
-# Phase 3 Prospect-contacts reshape adds Dynamic Link rows on Contact
-# pointing at CRM Organization. Reset those so the reshape can re-run cleanly.
+# Reset target-side Dynamic Link rows pointing at CRM Organization
+# (added by older reshape versions; the current reshape repoints in
+# place rather than adding). Kept for compatibility with older runs.
 DYNAMIC_LINK_TARGETS = ["CRM Organization"]
 
 
 def reset_all():
 	report: dict[str, int] = {}
 
-	# 0. Revert the Phase 4 activity rewrite — flip reference_doctype
+	# 0. Revert the activity rewrite — flip reference_doctype
 	# (and friends) back from CRM-side to ERPNext-side so the next
 	# migration run has source-pointing rows to rewrite again. Done
 	# before parent deletion so references stay resolvable to the
@@ -82,7 +63,7 @@ def reset_all():
 			)
 			report[f"activity {activity_dt}: {target_dt} → {source_dt}"] = n
 
-	# 0b. Delete FCRM Notes that the Phase 3 notes reshape created — tagged
+	# 0b. Delete FCRM Notes that the notes reshape created — tagged
 	# via the `custom_source_crm_note` marker the reshape installs at
 	# runtime. User-created CRM-frontend FCRM Notes don't carry the
 	# marker and are left alone.
@@ -95,7 +76,7 @@ def reset_all():
 			frappe.db.delete("FCRM Note", {"custom_source_crm_note": ["is", "set"]})
 			report["FCRM Note (migrated)"] = n
 
-	# 0c. Delete ToDos that the Phase 3 assignments reshape synthesised
+	# 0c. Delete ToDos that the assignments reshape synthesised
 	# from the _assign cache (those whose reference_type is a CRM
 	# target). Re-running recreates them.
 	if frappe.db.exists("DocType", "ToDo"):
@@ -111,7 +92,7 @@ def reset_all():
 			)
 			report["ToDo (CRM-side, Open)"] = n
 
-	# 0d. Delete CRM Tasks that the Phase 3 tasks reshape created
+	# 0d. Delete CRM Tasks that the tasks reshape created
 	# (those with custom_source_todo set — tracks the source ERPNext
 	# ToDo.name). Re-running recreates them. User-created CRM Tasks
 	# don't carry this marker and are left alone.
@@ -193,7 +174,8 @@ def reset_all():
 			frappe.db.delete(parent_dt)
 			report[parent_dt] = n_before
 
-	# 3. Drop Dynamic Link rows added by Phase 3 prospect-contacts reshape.
+	# 3. Drop Dynamic Link rows added by older prospect-contacts reshape
+	# versions (the current reshape repoints in place, not added).
 	for link_doctype in DYNAMIC_LINK_TARGETS:
 		n_before = frappe.db.count("Dynamic Link", {"link_doctype": link_doctype})
 		if n_before:

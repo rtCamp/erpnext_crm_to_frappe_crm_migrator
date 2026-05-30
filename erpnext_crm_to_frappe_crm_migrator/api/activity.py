@@ -1,24 +1,9 @@
-"""Phase 4 — activity reference rewrite.
+"""Activity reference rewrite — flips `reference_doctype` (and aliases)
+on activity records from ERPNext source values to CRM target values.
 
-Walks the activity doctypes (FCRM Note, CRM Task, CRM Call Log,
-CRM Notification, Comment, Communication, File, ToDo) and rewrites their
-reference-doctype field from ERPNext source values to the corresponding
-Frappe CRM target values. Reference *names* are unchanged because Phase 2
-preserves source `name` on target rows.
-
-Also rewrites `CRM Service Level Agreement.apply_on`. Existing SLA rows
-carry `apply_on = "Lead"` / `"Opportunity"`, but Frappe CRM's link_filters
-on that field only accept `["CRM Lead", "CRM Deal"]`, so any SLA row left
-unrewritten fails on next save. Same rewrite shape as the activity
-doctypes, so it lives here.
-
-Each doctype is its own step in the CRM Migration Run log. The runner
-appends one CRM Migration Run Step per doctype with
-`s_doctype = t_doctype = <doctype>` and counters for the rows updated.
-
-Idempotency: re-runs match no rows because the WHERE filter targets only
-source-doctype values; once rewritten the rows hold target-doctype values
-and are no longer matched.
+Reference names are preserved by the core records runner, so only the
+doctype column needs to change. See `docs/mapping.md` for the full
+scope of doctypes touched.
 """
 
 from __future__ import annotations
@@ -28,8 +13,8 @@ import frappe
 from erpnext_crm_to_frappe_crm_migrator.mapping.registry import REVERSE_DOCTYPE_MAP
 
 # (activity_doctype, doctype-field, name-field). Order is the order rows
-# appear in the Run log. name_field is informational — Phase 2 preserves
-# source `name` on target rows, so only doctype_field is rewritten.
+# appear in the Run log. name_field is informational — source `name` is
+# preserved on target rows, so only doctype_field is rewritten.
 ACTIVITY_SPECS: list[tuple[str, str, str]] = [
 	("FCRM Note", "reference_doctype", "reference_docname"),
 	("CRM Task", "reference_doctype", "reference_docname"),
