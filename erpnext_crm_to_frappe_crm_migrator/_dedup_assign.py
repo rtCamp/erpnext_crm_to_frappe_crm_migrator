@@ -7,7 +7,6 @@ import json
 
 import frappe
 
-
 _FIELDS = ("_assign", "_user_tags", "_liked_by")
 _DOCTYPES = (
 	"CRM Lead",
@@ -33,11 +32,7 @@ def _dedup(raw):
 	seen: set = set()
 	deduped: list = []
 	for item in decoded:
-		key = (
-			item
-			if isinstance(item, (str, int, float, bool))
-			else json.dumps(item, sort_keys=True)
-		)
+		key = item if isinstance(item, (str, int, float, bool)) else json.dumps(item, sort_keys=True)
 		if key in seen:
 			continue
 		seen.add(key)
@@ -50,28 +45,24 @@ def run():
 	for dt in _DOCTYPES:
 		if not frappe.db.exists("DocType", dt):
 			continue
+		tbl = frappe.qb.DocType(dt)
 		for fld in _FIELDS:
-			rows = frappe.db.sql(
-				f"""
-				SELECT name, `{fld}`
-				FROM `tab{dt}`
-				WHERE `{fld}` IS NOT NULL AND `{fld}` != '' AND `{fld}` != '[]'
-				""",
-				as_dict=True,
-			)
+			col = tbl[fld]
+			rows = (
+				frappe.qb.from_(tbl)
+				.select(tbl.name, col)
+				.where(col.isnotnull() & (col != "") & (col != "[]"))
+			).run(as_dict=True)
 			updated = 0
 			for r in rows:
 				deduped = _dedup(r[fld])
 				if deduped != r[fld]:
-					frappe.db.sql(
-						f"UPDATE `tab{dt}` SET `{fld}` = %s WHERE name = %s",
-						(deduped, r["name"]),
-					)
+					(frappe.qb.update(tbl).set(col, deduped).where(tbl.name == r["name"]).run())
 					updated += 1
 			if updated:
 				report[f"{dt}.{fld}"] = updated
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- dev helper — persist per-row dedup UPDATEs before printing the report
 	print("=== Dedup complete ===")
 	if not report:
 		print("  (no duplicates found)")

@@ -82,13 +82,12 @@ def rewrite_activity_doctype(
 				result["skipped"] += 1
 				continue
 
-			frappe.db.sql(
-				f"""
-				UPDATE `tab{activity_dt}`
-				SET `{doctype_field}` = %s
-				WHERE `{doctype_field}` = %s
-				""",
-				(target_dt, source_dt),
+			table = frappe.qb.DocType(activity_dt)
+			(
+				frappe.qb.update(table)
+				.set(table[doctype_field], target_dt)
+				.where(table[doctype_field] == source_dt)
+				.run()
 			)
 			result["ok"] += matched
 		except Exception as e:
@@ -100,7 +99,7 @@ def rewrite_activity_doctype(
 				message=frappe.get_traceback(),
 			)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist per-doctype activity rewrites so the next doctype sees a consistent state
 	return result
 
 
@@ -126,28 +125,25 @@ def rewrite_assignment_todos() -> dict:
 		"sample_failed": [],
 	}
 
+	todo = frappe.qb.DocType("ToDo")
 	for source_dt, target_dt in REVERSE_DOCTYPE_MAP.items():
 		try:
-			matched = frappe.db.sql(
-				"""
-				SELECT COUNT(*) FROM `tabToDo`
-				WHERE reference_type = %s
-				  AND description LIKE 'Assignment for %%'
-				""",
-				(source_dt,),
-			)[0][0]
+			matched = frappe.db.count(
+				"ToDo",
+				{
+					"reference_type": source_dt,
+					"description": ["like", "Assignment for %"],
+				},
+			)
 			if not matched:
 				result["skipped"] += 1
 				continue
 
-			frappe.db.sql(
-				"""
-				UPDATE `tabToDo`
-				SET reference_type = %s
-				WHERE reference_type = %s
-				  AND description LIKE 'Assignment for %%'
-				""",
-				(target_dt, source_dt),
+			(
+				frappe.qb.update(todo)
+				.set(todo.reference_type, target_dt)
+				.where((todo.reference_type == source_dt) & (todo.description.like("Assignment for %")))
+				.run()
 			)
 			result["ok"] += int(matched)
 		except Exception as e:
@@ -159,7 +155,7 @@ def rewrite_assignment_todos() -> dict:
 				message=frappe.get_traceback(),
 			)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist per-doctype activity rewrites so the next doctype sees a consistent state
 	return result
 
 
@@ -172,8 +168,7 @@ def rewrite_all_activities() -> list[tuple[str, dict]]:
 	rewritten. See `rewrite_assignment_todos` for the rationale.
 	"""
 	out: list[tuple[str, dict]] = [
-		(dt, rewrite_activity_doctype(dt, fld_dt, fld_name))
-		for (dt, fld_dt, fld_name) in ACTIVITY_SPECS
+		(dt, rewrite_activity_doctype(dt, fld_dt, fld_name)) for (dt, fld_dt, fld_name) in ACTIVITY_SPECS
 	]
 	out.append(("ToDo", rewrite_assignment_todos()))
 	return out

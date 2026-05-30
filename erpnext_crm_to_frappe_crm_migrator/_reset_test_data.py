@@ -7,6 +7,7 @@ ERPNext doctypes are NOT touched. See `docs/dev.md`. Dev/test only.
 """
 
 import frappe
+from frappe.query_builder.functions import Count
 
 from erpnext_crm_to_frappe_crm_migrator.api.activity import ACTIVITY_SPECS
 from erpnext_crm_to_frappe_crm_migrator.mapping.registry import REVERSE_DOCTYPE_MAP
@@ -55,11 +56,12 @@ def reset_all():
 			n = frappe.db.count(activity_dt, {doctype_field: target_dt})
 			if not n:
 				continue
-			frappe.db.sql(
-				f"UPDATE `tab{activity_dt}` "
-				f"SET `{doctype_field}` = %s "
-				f"WHERE `{doctype_field}` = %s",
-				(source_dt, target_dt),
+			tbl = frappe.qb.DocType(activity_dt)
+			(
+				frappe.qb.update(tbl)
+				.set(tbl[doctype_field], source_dt)
+				.where(tbl[doctype_field] == target_dt)
+				.run()
 			)
 			report[f"activity {activity_dt}: {target_dt} → {source_dt}"] = n
 
@@ -67,9 +69,8 @@ def reset_all():
 	# via the `custom_source_crm_note` marker the reshape installs at
 	# runtime. User-created CRM-frontend FCRM Notes don't carry the
 	# marker and are left alone.
-	if (
-		frappe.db.exists("DocType", "FCRM Note")
-		and frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"})
+	if frappe.db.exists("DocType", "FCRM Note") and frappe.db.exists(
+		"Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"}
 	):
 		n = frappe.db.count("FCRM Note", {"custom_source_crm_note": ["is", "set"]})
 		if n:
@@ -96,9 +97,8 @@ def reset_all():
 	# (those with custom_source_todo set — tracks the source ERPNext
 	# ToDo.name). Re-running recreates them. User-created CRM Tasks
 	# don't carry this marker and are left alone.
-	if (
-		frappe.db.exists("DocType", "CRM Task")
-		and frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"})
+	if frappe.db.exists("DocType", "CRM Task") and frappe.db.exists(
+		"Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"}
 	):
 		n = frappe.db.count("CRM Task", {"custom_source_todo": ["is", "set"]})
 		if n:
@@ -113,31 +113,33 @@ def reset_all():
 	# Migrator-synthesised rows (mig-stagelog-*) are deleted in step 1b
 	# below — they're new copies, not source moves.
 	if frappe.db.exists("DocType", "CRM Status Change Log"):
+		scl = frappe.qb.DocType("CRM Status Change Log")
 		for tgt_parent, src_parent in (
 			("CRM Lead", "Lead"),
 			("CRM Deal", "Opportunity"),
 		):
-			n = frappe.db.sql(
-				"""
-				SELECT COUNT(*) FROM `tabCRM Status Change Log`
-				WHERE parenttype = %s
-				  AND parentfield = 'status_change_log'
-				  AND name NOT LIKE 'mig-stagelog-%%'
-				""",
-				(tgt_parent,),
-			)[0][0]
-			if n:
-				frappe.db.sql(
-					"""
-					UPDATE `tabCRM Status Change Log`
-					SET parenttype = %s
-					WHERE parenttype = %s
-					  AND parentfield = 'status_change_log'
-					  AND name NOT LIKE 'mig-stagelog-%%'
-					""",
-					(src_parent, tgt_parent),
+			count_row = (
+				frappe.qb.from_(scl)
+				.select(Count("*"))
+				.where(
+					(scl.parenttype == tgt_parent)
+					& (scl.parentfield == "status_change_log")
+					& scl.name.not_like("mig-stagelog-%")
 				)
-				report[f"reanchor revert CRM Status Change Log: {tgt_parent} → {src_parent}"] = int(n)
+			).run()
+			n = int(count_row[0][0]) if count_row else 0
+			if n:
+				(
+					frappe.qb.update(scl)
+					.set(scl.parenttype, src_parent)
+					.where(
+						(scl.parenttype == tgt_parent)
+						& (scl.parentfield == "status_change_log")
+						& scl.name.not_like("mig-stagelog-%")
+					)
+					.run()
+				)
+				report[f"reanchor revert CRM Status Change Log: {tgt_parent} → {src_parent}"] = n
 
 	# 1b. Delete synthesised child rows (mig-stagelog-* from the
 	# Opportunity stage-log merge), then delete remaining target-side
@@ -192,8 +194,7 @@ def reset_all():
 				frappe.db.delete(dt)
 				report[dt] = n_before
 
-	frappe.db.commit()
-
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- dev helper — persist the destructive reset before printing the report
 	print("=== Reset complete ===")
 	for k, v in sorted(report.items()):
 		print(f"  {k:40s} {v}")
@@ -222,37 +223,38 @@ def reset_deal_only():
 		n = frappe.db.count(activity_dt, {doctype_field: "CRM Deal"})
 		if not n:
 			continue
-		frappe.db.sql(
-			f"UPDATE `tab{activity_dt}` SET `{doctype_field}` = %s WHERE `{doctype_field}` = %s",
-			("Opportunity", "CRM Deal"),
+		tbl = frappe.qb.DocType(activity_dt)
+		(
+			frappe.qb.update(tbl)
+			.set(tbl[doctype_field], "Opportunity")
+			.where(tbl[doctype_field] == "CRM Deal")
+			.run()
 		)
 		report[f"activity {activity_dt}: CRM Deal → Opportunity"] = n
 
 	# Also revert the ToDo assignment-only rewrite (CRM Deal → Opportunity).
 	if frappe.db.exists("DocType", "ToDo"):
-		n = frappe.db.sql(
-			"""
-			SELECT COUNT(*) FROM `tabToDo`
-			WHERE reference_type = 'CRM Deal'
-			  AND description LIKE 'Assignment for %%'
-			""",
-		)[0][0]
+		n = frappe.db.count(
+			"ToDo",
+			{
+				"reference_type": "CRM Deal",
+				"description": ["like", "Assignment for %"],
+			},
+		)
 		if n:
-			frappe.db.sql(
-				"""
-				UPDATE `tabToDo`
-				SET reference_type = 'Opportunity'
-				WHERE reference_type = 'CRM Deal'
-				  AND description LIKE 'Assignment for %%'
-				""",
+			todo = frappe.qb.DocType("ToDo")
+			(
+				frappe.qb.update(todo)
+				.set(todo.reference_type, "Opportunity")
+				.where((todo.reference_type == "CRM Deal") & todo.description.like("Assignment for %"))
+				.run()
 			)
 			report["activity ToDo (assignment): CRM Deal → Opportunity"] = int(n)
 
 	# 0b. Migrated FCRM Notes whose parent is a CRM Deal — identified by
 	# the `custom_source_crm_note` marker the reshape installs at runtime.
-	if (
-		frappe.db.exists("DocType", "FCRM Note")
-		and frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"})
+	if frappe.db.exists("DocType", "FCRM Note") and frappe.db.exists(
+		"Custom Field", {"dt": "FCRM Note", "fieldname": "custom_source_crm_note"}
 	):
 		filters = {
 			"custom_source_crm_note": ["is", "set"],
@@ -274,9 +276,8 @@ def reset_deal_only():
 	# 0d. Migrated CRM Tasks anchored to CRM Deal (or to Opportunity after
 	# the activity revert above flipped them back). Match by marker field,
 	# then narrow by either reference_doctype so we catch both states.
-	if (
-		frappe.db.exists("DocType", "CRM Task")
-		and frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"})
+	if frappe.db.exists("DocType", "CRM Task") and frappe.db.exists(
+		"Custom Field", {"dt": "CRM Task", "fieldname": "custom_source_todo"}
 	):
 		n = frappe.db.count(
 			"CRM Task",
@@ -289,13 +290,17 @@ def reset_deal_only():
 			# Also drop the assignment ToDos those tasks own — the bulk
 			# task reshape now synthesises one ToDo per assignee with
 			# reference_type='CRM Task'. Re-running recreates them.
-			task_names = frappe.db.sql_list(
-				"""
-				SELECT name FROM `tabCRM Task`
-				WHERE `custom_source_todo` IS NOT NULL
-				  AND reference_doctype IN ('CRM Deal', 'Opportunity')
-				"""
-			)
+			ct = frappe.qb.DocType("CRM Task")
+			task_names = [
+				r[0]
+				for r in frappe.qb.from_(ct)
+				.select(ct.name)
+				.where(
+					ct["custom_source_todo"].isnotnull()
+					& ct.reference_doctype.isin(["CRM Deal", "Opportunity"])
+				)
+				.run()
+			]
 			if task_names:
 				todo_n = frappe.db.count(
 					"ToDo",
@@ -322,25 +327,29 @@ def reset_deal_only():
 	# would destroy source data. Exclude mig-stagelog-* (those are newly
 	# synthesised by reshape_opportunity_stage_logs — delete them in 1b).
 	if frappe.db.exists("DocType", "CRM Status Change Log"):
-		n = frappe.db.sql(
-			"""
-			SELECT COUNT(*) FROM `tabCRM Status Change Log`
-			WHERE parenttype = 'CRM Deal'
-			  AND parentfield = 'status_change_log'
-			  AND name NOT LIKE 'mig-stagelog-%%'
-			"""
-		)[0][0]
-		if n:
-			frappe.db.sql(
-				"""
-				UPDATE `tabCRM Status Change Log`
-				SET parenttype = 'Opportunity'
-				WHERE parenttype = 'CRM Deal'
-				  AND parentfield = 'status_change_log'
-				  AND name NOT LIKE 'mig-stagelog-%%'
-				"""
+		scl = frappe.qb.DocType("CRM Status Change Log")
+		count_row = (
+			frappe.qb.from_(scl)
+			.select(Count("*"))
+			.where(
+				(scl.parenttype == "CRM Deal")
+				& (scl.parentfield == "status_change_log")
+				& scl.name.not_like("mig-stagelog-%")
 			)
-			report["reanchor revert CRM Status Change Log: CRM Deal → Opportunity"] = int(n)
+		).run()
+		n = int(count_row[0][0]) if count_row else 0
+		if n:
+			(
+				frappe.qb.update(scl)
+				.set(scl.parenttype, "Opportunity")
+				.where(
+					(scl.parenttype == "CRM Deal")
+					& (scl.parentfield == "status_change_log")
+					& scl.name.not_like("mig-stagelog-%")
+				)
+				.run()
+			)
+			report["reanchor revert CRM Status Change Log: CRM Deal → Opportunity"] = n
 
 		# 1b. Drop only the merge-synthesised stage-log rows.
 		n = frappe.db.count(
@@ -374,17 +383,17 @@ def reset_deal_only():
 	# 3. Migration Run history scoped to Opportunity (so the next run is
 	# the only one in the table, easier to read).
 	if frappe.db.exists("DocType", "CRM Migration Run"):
-		runs = frappe.db.sql_list(
-			"SELECT name FROM `tabCRM Migration Run` WHERE scoped_to = 'Opportunity'"
-		)
+		mrun = frappe.qb.DocType("CRM Migration Run")
+		runs = [
+			r[0] for r in frappe.qb.from_(mrun).select(mrun.name).where(mrun.scoped_to == "Opportunity").run()
+		]
 		for r in runs:
 			frappe.db.delete("CRM Migration Run Step", {"parent": r})
 			frappe.db.delete("CRM Migration Run", {"name": r})
 		if runs:
 			report["CRM Migration Run (Opportunity)"] = len(runs)
 
-	frappe.db.commit()
-
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- dev helper — persist the destructive deal-only reset before printing the report
 	print("=== Deal-only reset complete ===")
 	for k, v in sorted(report.items()):
 		print(f"  {k:40s} {v}")

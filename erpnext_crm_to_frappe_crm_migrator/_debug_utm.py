@@ -21,7 +21,7 @@ def run_inline():
 			"status": "Pending",
 		}
 	).insert(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- dev helper — persist the Run doc before _execute_run reads it back
 
 	print(f"Created run: {run.name}")
 	_execute_run(run_name=run.name, source_doctype="UTM Source")
@@ -36,14 +36,10 @@ def run_inline():
 			print(f"  last_error: {step.last_error}")
 
 	# Inspect a few rows.
-	rows = frappe.db.sql(
-		"""
-		SELECT name, source_name, details
-		FROM `tabCRM Lead Source`
-		LIMIT 5
-		""",
-		as_dict=True,
-	)
+	cls = frappe.qb.DocType("CRM Lead Source")
+	rows = (frappe.qb.from_(cls).select(cls.name, cls.source_name, cls.details).limit(5)).run(as_dict=True)
 	print("\nSample CRM Lead Source rows:")
 	for r in rows:
-		print(f"  name={r['name']!r}  source_name={r['source_name']!r}  details={(r['details'] or '')[:50]!r}")
+		print(
+			f"  name={r['name']!r}  source_name={r['source_name']!r}  details={(r['details'] or '')[:50]!r}"
+		)

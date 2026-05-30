@@ -67,6 +67,7 @@ MIGRATION_ORDER = [
 # whitelisted entry points
 # ---------------------------------------------------------------------------
 
+
 @frappe.whitelist()
 def run_migration(source_doctype: str | None = None) -> dict:
 	"""Enqueue an orchestrator job. Returns the new CRM Migration Run name.
@@ -96,10 +97,7 @@ def run_migration(source_doctype: str | None = None) -> dict:
 			)
 	else:
 		# Full-scope run: every tab must be locked.
-		unlocked = [
-			s for s in SOURCE_DOCTYPES
-			if not settings.get(f"{s.lower().replace(' ', '_')}_locked")
-		]
+		unlocked = [s for s in SOURCE_DOCTYPES if not settings.get(f"{s.lower().replace(' ', '_')}_locked")]
 		if unlocked:
 			frappe.throw(
 				_("Lock every tab before running the full migration. Unlocked: {0}").format(
@@ -133,6 +131,7 @@ def run_migration(source_doctype: str | None = None) -> dict:
 # orchestrator (worker side — runs in the background queue)
 # ---------------------------------------------------------------------------
 
+
 def _execute_run(run_name: str, source_doctype: str | None) -> None:
 	"""Background worker entry point. Runs every requested step and updates
 	the run log so the user can watch progress in /app/crm-migration-run.
@@ -141,7 +140,7 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 	run.status = "Running"
 	run.started_at = now_datetime()
 	run.save(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — show "Running" in /app/crm-migration-run before the first step starts
 
 	steps_to_run = [source_doctype] if source_doctype else list(MIGRATION_ORDER)
 
@@ -160,7 +159,7 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 			},
 		)
 		run.save(ignore_permissions=True)
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — show this step as Running while it executes
 
 		try:
 			pre_block = _preflight_link_check(s)
@@ -169,7 +168,7 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 				step.last_error = pre_block
 				step.completed_at = now_datetime()
 				run.save(ignore_permissions=True)
-				frappe.db.commit()
+				frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — surface Blocked status the moment preflight fails
 				any_failed = True
 				# A blocked step short-circuits the whole orchestrator only
 				# when the run is full-scope and the missing prereq is
@@ -201,13 +200,13 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 					combined = (step.last_error + " | reshape: " + reshape_result["last_error"])[:500]
 					step.last_error = combined
 			if reshape_result["sample_failed"]:
-				combined_names = list(filter(None, [step.sample_failed_names])) + reshape_result["sample_failed"]
+				prior = [step.sample_failed_names] if step.sample_failed_names else []
+				combined_names = prior + reshape_result["sample_failed"]
 				step.sample_failed_names = ", ".join(combined_names)[:1000]
 
 			step_failed = (result["failed"] > 0) or (reshape_result["failed"] > 0)
 			step_did_anything = (
-				result["ok"] or result["skipped"]
-				or reshape_result["ok"] or reshape_result["skipped"]
+				result["ok"] or result["skipped"] or reshape_result["ok"] or reshape_result["skipped"]
 			)
 			if step_failed:
 				step.status = "Failed"
@@ -230,7 +229,7 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 			any_failed = True
 
 		run.save(ignore_permissions=True)
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — surface per-step final status as each step ends
 
 	# Activity reference rewrite. Only run on full-scope runs;
 	# per-source runs stay focused on that source's parent + reshape.
@@ -247,12 +246,13 @@ def _execute_run(run_name: str, source_doctype: str | None) -> None:
 	else:
 		run.status = "Succeeded"
 	run.save(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — final overall run status visible in the desk
 
 
 # ---------------------------------------------------------------------------
 # Activity reference rewrite (called from the orchestrator)
 # ---------------------------------------------------------------------------
+
 
 def _run_activity_phase(run) -> tuple[bool, bool]:
 	"""Append one CRM Migration Run Step row per activity doctype.
@@ -297,7 +297,7 @@ def _run_activity_phase(run) -> tuple[bool, bool]:
 		step.completed_at = now_datetime()
 
 	run.save(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — activity-phase step rows visible in the desk
 	return any_failed, any_partial
 
 
@@ -365,10 +365,7 @@ def run_activity_only() -> dict:
 	frappe.has_permission(RUN_DOCTYPE, "create", throw=True)
 
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
-	unlocked = [
-		s for s in SOURCE_DOCTYPES
-		if not settings.get(f"{s.lower().replace(' ', '_')}_locked")
-	]
+	unlocked = [s for s in SOURCE_DOCTYPES if not settings.get(f"{s.lower().replace(' ', '_')}_locked")]
 	if unlocked:
 		frappe.throw(
 			_("Lock every tab before rewriting activity references. Unlocked: {0}").format(
@@ -402,7 +399,7 @@ def _execute_activity_run(run_name: str) -> None:
 	run.status = "Running"
 	run.started_at = now_datetime()
 	run.save(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — show activity-only run as Running before it starts
 
 	any_failed, any_partial = _run_activity_phase(run)
 
@@ -414,12 +411,13 @@ def _execute_activity_run(run_name: str) -> None:
 	else:
 		run.status = "Succeeded"
 	run.save(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- live progress — final activity-only run status visible in the desk
 
 
 # ---------------------------------------------------------------------------
 # Lead → Prospect lookup for Opportunity-from-Lead rows
 # ---------------------------------------------------------------------------
+
 
 def _build_lead_to_prospect_map(source_doctype: str) -> dict[str, str]:
 	"""Return `{lead_name: prospect_name}` for the Opportunity step.
@@ -436,15 +434,12 @@ def _build_lead_to_prospect_map(source_doctype: str) -> dict[str, str]:
 		return {}
 	if not frappe.db.exists("DocType", "Prospect Lead"):
 		return {}
-	rows = frappe.db.sql(
-		"""
-		SELECT lead, parent
-		FROM `tabProspect Lead`
-		WHERE parenttype = 'Prospect'
-		  AND lead IS NOT NULL AND lead != ''
-		""",
-		as_dict=True,
-	)
+	pl = frappe.qb.DocType("Prospect Lead")
+	rows = (
+		frappe.qb.from_(pl)
+		.select(pl.lead, pl.parent)
+		.where((pl.parenttype == "Prospect") & pl.lead.isnotnull() & (pl.lead != ""))
+	).run(as_dict=True)
 	# If a Lead appears under multiple Prospects, the last one wins —
 	# inversions of one-to-many usually pick last; the user can fix
 	# specific rows post-migration if a different choice is desired.
@@ -471,24 +466,22 @@ def _ensure_lead_company_orgs(
 	# Leads referenced by from='Lead' Opportunities that don't have an
 	# owning Prospect — these are the ones with no organization unless
 	# we bridge via the Lead's company_name.
-	rows = frappe.db.sql(
-		"""
-		SELECT l.name AS lead, l.company_name
-		FROM `tabLead` l
-		WHERE l.name IN (
-			SELECT DISTINCT party_name FROM `tabOpportunity`
-			WHERE opportunity_from = 'Lead'
-			  AND party_name IS NOT NULL AND party_name != ''
-		)
-		  AND l.company_name IS NOT NULL AND l.company_name != ''
-		""",
-		as_dict=True,
+	lead = frappe.qb.DocType("Lead")
+	opp = frappe.qb.DocType("Opportunity")
+	from_lead_party_names = (
+		frappe.qb.from_(opp)
+		.select(opp.party_name)
+		.distinct()
+		.where((opp.opportunity_from == "Lead") & opp.party_name.isnotnull() & (opp.party_name != ""))
 	)
-	lead_to_company = {
-		r["lead"]: r["company_name"]
-		for r in rows
-		if r["lead"] not in lead_to_prospect
-	}
+	rows = (
+		frappe.qb.from_(lead)
+		.select(lead.name.as_("lead"), lead.company_name)
+		.where(
+			lead.name.isin(from_lead_party_names) & lead.company_name.isnotnull() & (lead.company_name != "")
+		)
+	).run(as_dict=True)
+	lead_to_company = {r["lead"]: r["company_name"] for r in rows if r["lead"] not in lead_to_prospect}
 	if not lead_to_company:
 		return {}
 
@@ -496,23 +489,25 @@ def _ensure_lead_company_orgs(
 	# don't already exist as a CRM Organization (would also collide with
 	# existing Prospect-derived orgs, since both use the same name).
 	distinct_companies = set(lead_to_company.values())
-	already = set(frappe.db.sql_list(
-		"SELECT name FROM `tabCRM Organization` WHERE name IN %s",
-		(tuple(distinct_companies),),
-	))
+	co = frappe.qb.DocType("CRM Organization")
+	already = set(
+		r[0] for r in frappe.qb.from_(co).select(co.name).where(co.name.isin(list(distinct_companies))).run()
+	)
 	to_create = distinct_companies - already
 	if to_create:
 		now = now_datetime()
-		values = [
-			(c, "Administrator", now, now, "Administrator", 0, c)
-			for c in to_create
-		]
+		values = [(c, "Administrator", now, now, "Administrator", 0, c) for c in to_create]
 		try:
 			frappe.db.bulk_insert(
 				"CRM Organization",
 				fields=[
-					"name", "owner", "creation", "modified", "modified_by",
-					"docstatus", "organization_name",
+					"name",
+					"owner",
+					"creation",
+					"modified",
+					"modified_by",
+					"docstatus",
+					"organization_name",
 				],
 				values=values,
 				ignore_duplicates=True,
@@ -529,6 +524,7 @@ def _ensure_lead_company_orgs(
 # ---------------------------------------------------------------------------
 # Customer → CRM Organization bridge for Opportunity-from-Customer rows
 # ---------------------------------------------------------------------------
+
 
 def _ensure_customer_organizations(source_doctype: str) -> dict[str, str]:
 	"""For Opportunity rows where `opportunity_from = 'Customer'`, ensure
@@ -551,28 +547,36 @@ def _ensure_customer_organizations(source_doctype: str) -> dict[str, str]:
 	if not frappe.db.exists("DocType", "Customer"):
 		return {}
 
-	customer_ids = frappe.db.sql_list(
-		"""
-		SELECT DISTINCT party_name FROM `tabOpportunity`
-		WHERE opportunity_from = 'Customer' AND party_name IS NOT NULL AND party_name != ''
-		"""
-	)
+	opp = frappe.qb.DocType("Opportunity")
+	customer_ids = [
+		r[0]
+		for r in frappe.qb.from_(opp)
+		.select(opp.party_name)
+		.distinct()
+		.where((opp.opportunity_from == "Customer") & opp.party_name.isnotnull() & (opp.party_name != ""))
+		.run()
+	]
 	if not customer_ids:
 		return {}
 
-	customers = frappe.db.sql(
-		"""
-		SELECT name, customer_name, owner, creation, modified, modified_by
-		FROM `tabCustomer`
-		WHERE name IN %(ids)s
-		""",
-		{"ids": tuple(customer_ids)},
-		as_dict=True,
-	)
+	cust = frappe.qb.DocType("Customer")
+	customers = (
+		frappe.qb.from_(cust)
+		.select(
+			cust.name,
+			cust.customer_name,
+			cust.owner,
+			cust.creation,
+			cust.modified,
+			cust.modified_by,
+		)
+		.where(cust.name.isin(customer_ids))
+	).run(as_dict=True)
 	if not customers:
 		return {}
 
-	existing_orgs = set(frappe.db.sql_list("SELECT name FROM `tabCRM Organization`"))
+	co = frappe.qb.DocType("CRM Organization")
+	existing_orgs = set(r[0] for r in frappe.qb.from_(co).select(co.name).run())
 
 	translation: dict[str, str] = {}
 	orgs_to_insert: list[tuple] = []
@@ -585,35 +589,42 @@ def _ensure_customer_organizations(source_doctype: str) -> dict[str, str]:
 		translation[cust["name"]] = org_name
 
 		if org_name not in existing_orgs:
-			orgs_to_insert.append((
-				org_name,
-				cust["owner"],
-				cust["creation"],
-				cust["modified"],
-				cust["modified_by"],
-				0,
-				org_name,
-			))
+			orgs_to_insert.append(
+				(
+					org_name,
+					cust["owner"],
+					cust["creation"],
+					cust["modified"],
+					cust["modified_by"],
+					0,
+					org_name,
+				)
+			)
 			existing_orgs.add(org_name)
 
 	if orgs_to_insert:
 		frappe.db.bulk_insert(
 			"CRM Organization",
 			fields=[
-				"name", "owner", "creation", "modified", "modified_by",
-				"docstatus", "organization_name",
+				"name",
+				"owner",
+				"creation",
+				"modified",
+				"modified_by",
+				"docstatus",
+				"organization_name",
 			],
 			values=orgs_to_insert,
 			ignore_duplicates=True,
 		)
 
-	frappe.db.commit()
 	return translation
 
 
 # ---------------------------------------------------------------------------
 # per-doctype migration step
 # ---------------------------------------------------------------------------
+
 
 def _migrate_one_doctype(source_doctype: str) -> dict:
 	"""Migrate every row of one source doctype into its target.
@@ -695,9 +706,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	# ERPNext Customer it came from. Stash the original Customer.name on
 	# `opportunity_from='Customer'` deals before the party_name rewrite
 	# clobbers it.
-	wants_erpnext_customer = (
-		source_doctype == "Opportunity" and target_meta.has_field("erpnext_customer")
-	)
+	wants_erpnext_customer = source_doctype == "Opportunity" and target_meta.has_field("erpnext_customer")
 	if wants_erpnext_customer and "erpnext_customer" not in target_cols:
 		target_cols.append("erpnext_customer")
 
@@ -742,13 +751,16 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 	sample_failed: list[str] = []
 	offset = 0
 
+	src_tbl = frappe.qb.DocType(source_doctype)
 	while offset < total:
 		try:
-			rows = frappe.db.sql(
-				f"SELECT * FROM `tab{source_doctype}` ORDER BY `name` LIMIT %s OFFSET %s",
-				(CHUNK_SIZE, offset),
-				as_dict=True,
-			)
+			rows = (
+				frappe.qb.from_(src_tbl)
+				.select(src_tbl.star)
+				.orderby(src_tbl.name)
+				.limit(CHUNK_SIZE)
+				.offset(offset)
+			).run(as_dict=True)
 		except Exception as e:
 			last_error = f"chunk read at offset {offset}: {e}"
 			frappe.log_error(
@@ -769,10 +781,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 				# Customer.name into _erpnext_customer first so the
 				# erpnext_customer tracker on CRM Deal still records which
 				# ERPNext Customer the deal came from.
-				if (
-					customer_to_organization
-					and src_row.get("opportunity_from") == "Customer"
-				):
+				if customer_to_organization and src_row.get("opportunity_from") == "Customer":
 					original_customer = src_row.get("party_name")
 					if original_customer:
 						src_row["_erpnext_customer"] = original_customer
@@ -806,16 +815,17 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 			# insert — that's our skipped count for this chunk. Anything
 			# else is genuinely new.
 			batch_names = [v[0] for v in values]
-			pre_existing = (
-				set(
-					frappe.db.sql_list(
-						f"SELECT `name` FROM `tab{target_doctype}` WHERE `name` IN %s",
-						(tuple(batch_names),),
-					)
+			if batch_names:
+				tgt_tbl = frappe.qb.DocType(target_doctype)
+				pre_existing = set(
+					r[0]
+					for r in frappe.qb.from_(tgt_tbl)
+					.select(tgt_tbl.name)
+					.where(tgt_tbl.name.isin(batch_names))
+					.run()
 				)
-				if batch_names
-				else set()
-			)
+			else:
+				pre_existing = set()
 			try:
 				frappe.db.bulk_insert(
 					target_doctype,
@@ -831,22 +841,20 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 				# the error in last_error.
 				failed += len(values)
 				last_error = f"bulk_insert chunk at offset {offset}: {e}"
-				for v in values[:SAMPLE_FAILED_LIMIT - len(sample_failed)]:
+				for v in values[: SAMPLE_FAILED_LIMIT - len(sample_failed)]:
 					sample_failed.append(v[0])  # name is column 0
 				frappe.log_error(
 					title=f"Migrator: {source_doctype} bulk_insert chunk @ offset {offset}",
 					message=frappe.get_traceback(),
 				)
 
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit -- per-chunk crash safety — interrupted N-row migration keeps the first floor(N/CHUNK_SIZE)*CHUNK_SIZE rows; re-run is idempotent via preserved name + ignore_duplicates
 		offset += CHUNK_SIZE
 
 	# Re-anchor shared-schema child rows (e.g. tabCRM Status Change Log)
 	# via meta inspection — Table fields don't appear in the locked
 	# field map anymore, so we discover them by walking source meta.
-	child_reanchored = _reanchor_shared_children(
-		source_doctype, target_doctype, target_meta
-	)
+	child_reanchored = _reanchor_shared_children(source_doctype, target_doctype, target_meta)
 
 	return {
 		"ok": ok,
@@ -862,6 +870,7 @@ def _migrate_one_doctype(source_doctype: str) -> dict:
 # preprocessing
 # ---------------------------------------------------------------------------
 
+
 def _dedup_json_list(raw: object) -> object:
 	"""Return `raw` with duplicate entries removed, preserving first-seen
 	order. Non-list values (NULL, malformed JSON, empty string) pass
@@ -871,6 +880,7 @@ def _dedup_json_list(raw: object) -> object:
 	if not raw or not isinstance(raw, str):
 		return raw
 	import json
+
 	try:
 		decoded = json.loads(raw)
 	except (json.JSONDecodeError, TypeError):
@@ -931,11 +941,7 @@ def _build_target_row(
 	# target column (e.g. a custom field on Opportunity → CRM Deal
 	# organization). Step 5 is the sole writer for dynamic-link
 	# values.
-	dynamic_sources = {
-		src_field
-		for (src_dt, src_field) in DYNAMIC_LINK_ROUTES
-		if src_dt == source_doctype
-	}
+	dynamic_sources = {src_field for (src_dt, src_field) in DYNAMIC_LINK_ROUTES if src_dt == source_doctype}
 	for src, tgt in src_to_tgt.items():
 		if src in dynamic_sources:
 			continue
@@ -997,15 +1003,12 @@ def _load_field_map(source_doctype: str, target_doctype: str) -> list[tuple[str,
 
 	Skips meta fields (handled separately by PRESERVED_META_FIELDS).
 	"""
-	rows = frappe.db.sql(
-		f"""
-		SELECT `source`, `target`
-		FROM `tab{FIELD_MAP_DOCTYPE}`
-		WHERE s_doctype = %s AND t_doctype = %s
-		""",
-		(source_doctype, target_doctype),
-		as_dict=True,
-	)
+	fm = frappe.qb.DocType(FIELD_MAP_DOCTYPE)
+	rows = (
+		frappe.qb.from_(fm)
+		.select(fm["source"], fm.target)
+		.where((fm.s_doctype == source_doctype) & (fm.t_doctype == target_doctype))
+	).run(as_dict=True)
 	pairs: list[tuple[str, str]] = []
 	for r in rows:
 		if r["source"] in PRESERVED_META_FIELDS:
@@ -1106,19 +1109,16 @@ def _reanchor_shared_children(
 			},
 		)
 		if to_move:
-			frappe.db.sql(
-				f"""
-				UPDATE `tab{child_dt}`
-				SET parenttype = %s,
-				    parentfield = %s
-				WHERE parenttype = %s
-				  AND parentfield = %s
-				""",
-				(target_doctype, tgt_field, source_doctype, src_field),
+			child_tbl = frappe.qb.DocType(child_dt)
+			(
+				frappe.qb.update(child_tbl)
+				.set(child_tbl.parenttype, target_doctype)
+				.set(child_tbl.parentfield, tgt_field)
+				.where((child_tbl.parenttype == source_doctype) & (child_tbl.parentfield == src_field))
+				.run()
 			)
 			total += int(to_move)
 
-	frappe.db.commit()
 	return total
 
 

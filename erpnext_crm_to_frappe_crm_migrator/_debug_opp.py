@@ -4,6 +4,8 @@ entries. See `docs/dev.md`. Dev/test only.
 """
 
 import frappe
+from frappe.query_builder import Order
+from pypika.functions import Substring
 
 from erpnext_crm_to_frappe_crm_migrator.api.runner import _execute_run
 
@@ -17,7 +19,7 @@ def run_inline():
 			"status": "Pending",
 		}
 	).insert(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- dev helper — persist the Run doc before _execute_run reads it back
 
 	print(f"Created run: {run.name}")
 	print("Executing inline (this can take a few minutes for 2k+ opportunities)…")
@@ -43,18 +45,14 @@ def run_inline():
 			print(f"  sample_failed: {step.sample_failed_names}")
 
 	# Error Log entries from this run window.
-	errs = frappe.db.sql(
-		"""
-		SELECT name, method, creation, LEFT(error, 800) AS error
-		FROM `tabError Log`
-		WHERE creation >= %s
-		  AND method LIKE 'Migrator%%'
-		ORDER BY creation DESC
-		LIMIT 25
-		""",
-		(run.started_at,),
-		as_dict=True,
-	)
+	el = frappe.qb.DocType("Error Log")
+	errs = (
+		frappe.qb.from_(el)
+		.select(el.name, el.method, el.creation, Substring(el.error, 1, 800).as_("error"))
+		.where((el.creation >= run.started_at) & el.method.like("Migrator%"))
+		.orderby(el.creation, order=Order.desc)
+		.limit(25)
+	).run(as_dict=True)
 	print()
 	print(f"=== Error Log entries since {run.started_at} ===")
 	if not errs:

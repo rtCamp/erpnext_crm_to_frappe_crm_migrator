@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections import defaultdict
 
 import frappe
+from frappe.query_builder import Case
+from frappe.query_builder.functions import Count, Lower
 from frappe.utils import cstr
 
 SAMPLE_FAILED_LIMIT = 50
@@ -56,7 +58,7 @@ def reshape_dynamic_links() -> dict:
 	ERPNext source doctypes (Lead / Opportunity / Prospect) to their
 	Frappe CRM equivalents.
 
-	One UPDATE per (parenttype × source) combination — 6 total. `link_name`
+	One UPDATE per (parenttype, source) combination — 6 total. `link_name`
 	is preserved verbatim because the core records runner keeps source
 	`name` on the target row, so the linkage continues to resolve
 	against the migrated CRM-side record. Idempotent — once flipped, the WHERE filter matches
@@ -81,19 +83,18 @@ def reshape_dynamic_links() -> dict:
 				continue
 
 			try:
-				frappe.db.sql(
-					"""
-					UPDATE `tabDynamic Link`
-					SET link_doctype = %s
-					WHERE parenttype = %s AND link_doctype = %s
-					""",
-					(tgt_dt, parenttype, src_dt),
+				dl = frappe.qb.DocType("Dynamic Link")
+				(
+					frappe.qb.update(dl)
+					.set(dl.link_doctype, tgt_dt)
+					.where((dl.parenttype == parenttype) & (dl.link_doctype == src_dt))
+					.run()
 				)
 				result["ok"] += int(matched)
 			except Exception as e:
 				_bump_failed(result, f"{parenttype}.links: {src_dt} → {tgt_dt}", e)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
@@ -139,10 +140,9 @@ def _ensure_crm_product(item_code: str, cache: set[str]) -> tuple[bool, str]:
 
 	# Source row from tabItem (if absent, we can't auto-create — caller will
 	# log and skip the dependent CRM Products row).
-	item_row = frappe.db.sql(
-		"SELECT * FROM `tabItem` WHERE name = %s",
-		(item_code,),
-		as_dict=True,
+	item_tbl = frappe.qb.DocType("Item")
+	item_row = (frappe.qb.from_(item_tbl).select(item_tbl.star).where(item_tbl.name == item_code)).run(
+		as_dict=True
 	)
 	if not item_row:
 		return False, f"tabItem row '{item_code}' missing — can't auto-create CRM Product"
@@ -180,32 +180,34 @@ def reshape_opportunity_items() -> dict:
 	# Run only against Opportunities that have already been migrated as
 	# CRM Deals — child rows whose parent doesn't exist on the target side
 	# would orphan.
-	migrated_deals = set(frappe.db.sql_list("SELECT name FROM `tabCRM Deal`"))
+	deal_tbl = frappe.qb.DocType("CRM Deal")
+	migrated_deals = set(r[0] for r in frappe.qb.from_(deal_tbl).select(deal_tbl.name).run())
 	if not migrated_deals:
 		return result
 
 	# Fetch all Opportunity Items in one shot — typically not huge.
-	items = frappe.db.sql(
-		"""
-		SELECT *
-		FROM `tabOpportunity Item`
-		WHERE parenttype = 'Opportunity'
-		  AND parentfield = 'items'
-		""",
-		as_dict=True,
-	)
+	oi = frappe.qb.DocType("Opportunity Item")
+	items = (
+		frappe.qb.from_(oi)
+		.select(oi.star)
+		.where((oi.parenttype == "Opportunity") & (oi.parentfield == "items"))
+	).run(as_dict=True)
 	if not items:
 		return result
 
 	# Pre-fetch CRM Products names that already exist (idempotency).
+	crm_products = frappe.qb.DocType("CRM Products")
 	existing_products = set(
-		frappe.db.sql_list(
-			"SELECT name FROM `tabCRM Products` WHERE parenttype = 'CRM Deal'"
-		)
+		r[0]
+		for r in frappe.qb.from_(crm_products)
+		.select(crm_products.name)
+		.where(crm_products.parenttype == "CRM Deal")
+		.run()
 	)
 
+	crm_product = frappe.qb.DocType("CRM Product")
 	crm_product_cache: set[str] = set(
-		frappe.db.sql_list("SELECT name FROM `tabCRM Product`")
+		r[0] for r in frappe.qb.from_(crm_product).select(crm_product.name).run()
 	)
 
 	to_insert: list[tuple] = []
@@ -274,13 +276,14 @@ def reshape_opportunity_items() -> dict:
 				message=frappe.get_traceback(),
 			)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
 # ---------------------------------------------------------------------------
 # 3. Opportunity contact_person + Contact.links → CRM Deal.contacts
 # ---------------------------------------------------------------------------
+
 
 def reshape_opportunity_contacts() -> dict:
 	"""Build CRM Deal.contacts child rows from Opportunity.contact_person
@@ -296,44 +299,48 @@ def reshape_opportunity_contacts() -> dict:
 	result = _empty_result()
 
 	# Need both party_name, opportunity_from, and contact_person.
-	deals = frappe.db.sql(
-		"""
-		SELECT o.name AS opp_name,
-		       o.opportunity_from AS opportunity_from,
-		       o.party_name AS party_name,
-		       o.contact_person AS contact_person
-		FROM `tabOpportunity` o
-		INNER JOIN `tabCRM Deal` cd ON cd.name = o.name
-		""",
-		as_dict=True,
-	)
+	opp = frappe.qb.DocType("Opportunity")
+	cd = frappe.qb.DocType("CRM Deal")
+	deals = (
+		frappe.qb.from_(opp)
+		.inner_join(cd)
+		.on(cd.name == opp.name)
+		.select(
+			opp.name.as_("opp_name"),
+			opp.opportunity_from.as_("opportunity_from"),
+			opp.party_name.as_("party_name"),
+			opp.contact_person.as_("contact_person"),
+		)
+	).run(as_dict=True)
 	if not deals:
 		return result
 
 	# Pre-fetch existing CRM Contacts for idempotency: key = (parent, contact)
+	crm_contacts = frappe.qb.DocType("CRM Contacts")
 	existing = set(
-		frappe.db.sql(
-			"""
-			SELECT parent, contact
-			FROM `tabCRM Contacts`
-			WHERE parenttype = 'CRM Deal'
-			"""
-		)
+		frappe.qb.from_(crm_contacts)
+		.select(crm_contacts.parent, crm_contacts.contact)
+		.where(crm_contacts.parenttype == "CRM Deal")
+		.run()
 	)
 
 	# Pre-fetch every Contact.links row for the doctypes Opportunity might
 	# reference, indexed by (link_doctype, link_name) so we can look up a
 	# contact list in O(1) per deal regardless of opportunity_from.
-	link_rows = frappe.db.sql(
-		"""
-		SELECT parent AS contact_name, link_doctype, link_name
-		FROM `tabDynamic Link`
-		WHERE parenttype = 'Contact'
-		  AND parentfield = 'links'
-		  AND link_doctype IN ('Prospect', 'Lead', 'Customer')
-		""",
-		as_dict=True,
-	)
+	dl = frappe.qb.DocType("Dynamic Link")
+	link_rows = (
+		frappe.qb.from_(dl)
+		.select(
+			dl.parent.as_("contact_name"),
+			dl.link_doctype,
+			dl.link_name,
+		)
+		.where(
+			(dl.parenttype == "Contact")
+			& (dl.parentfield == "links")
+			& (dl.link_doctype.isin(["Prospect", "Lead", "Customer"]))
+		)
+	).run(as_dict=True)
 	contacts_by_party: dict[tuple[str, str], list[str]] = defaultdict(list)
 	for r in link_rows:
 		contacts_by_party[(r["link_doctype"], r["link_name"])].append(r["contact_name"])
@@ -344,14 +351,12 @@ def reshape_opportunity_contacts() -> dict:
 	# Dynamic Link. Pre-fetch a {email_lower → contact_name} map from
 	# Contact Email so we can match in O(1) per deal.
 	contact_by_email: dict[str, str] = {}
-	for r in frappe.db.sql(
-		"""
-		SELECT parent AS contact, LOWER(email_id) AS email
-		FROM `tabContact Email`
-		WHERE email_id IS NOT NULL AND email_id != ''
-		""",
-		as_dict=True,
-	):
+	ce = frappe.qb.DocType("Contact Email")
+	for r in (
+		frappe.qb.from_(ce)
+		.select(ce.parent.as_("contact"), Lower(ce.email_id).as_("email"))
+		.where(ce.email_id.isnotnull() & (ce.email_id != ""))
+	).run(as_dict=True):
 		# First-wins; downstream rules don't dedup so multiple Contacts
 		# sharing an email all collapse to one. Acceptable for migration.
 		contact_by_email.setdefault(r["email"], r["contact"])
@@ -359,22 +364,20 @@ def reshape_opportunity_contacts() -> dict:
 	# Lead email lookup — only loaded when there's a from=Lead deal that
 	# might need the email fallback. Lazy via single query keyed by names.
 	from_lead_party_names = {
-		d["party_name"]
-		for d in deals
-		if d["opportunity_from"] == "Lead" and d["party_name"]
+		d["party_name"] for d in deals if d["opportunity_from"] == "Lead" and d["party_name"]
 	}
 	lead_email: dict[str, str] = {}
 	if from_lead_party_names:
-		for r in frappe.db.sql(
-			"""
-			SELECT name, LOWER(email_id) AS email
-			FROM `tabLead`
-			WHERE name IN %(names)s
-			  AND email_id IS NOT NULL AND email_id != ''
-			""",
-			{"names": tuple(from_lead_party_names)},
-			as_dict=True,
-		):
+		lead = frappe.qb.DocType("Lead")
+		for r in (
+			frappe.qb.from_(lead)
+			.select(lead.name, Lower(lead.email_id).as_("email"))
+			.where(
+				lead.name.isin(list(from_lead_party_names))
+				& lead.email_id.isnotnull()
+				& (lead.email_id != "")
+			)
+		).run(as_dict=True):
 			lead_email[r["name"]] = r["email"]
 
 	# Pre-fetch contact details for every contact we'll touch — this
@@ -398,15 +401,19 @@ def reshape_opportunity_contacts() -> dict:
 
 	contact_details: dict[str, dict] = {}
 	if all_contact_names:
-		rows = frappe.db.sql(
-			"""
-			SELECT name, full_name, gender, email_id, mobile_no, phone
-			FROM `tabContact`
-			WHERE name IN %(names)s
-			""",
-			{"names": tuple(all_contact_names)},
-			as_dict=True,
-		)
+		contact = frappe.qb.DocType("Contact")
+		rows = (
+			frappe.qb.from_(contact)
+			.select(
+				contact.name,
+				contact.full_name,
+				contact.gender,
+				contact.email_id,
+				contact.mobile_no,
+				contact.phone,
+			)
+			.where(contact.name.isin(list(all_contact_names)))
+		).run(as_dict=True)
 		for r in rows:
 			contact_details[r["name"]] = r
 
@@ -471,10 +478,10 @@ def reshape_opportunity_contacts() -> dict:
 				row = (
 					frappe.generate_hash(length=10),  # name
 					idx,
-					opp_name,                          # parent (CRM Deal name = Opp name)
+					opp_name,  # parent (CRM Deal name = Opp name)
 					"CRM Deal",
 					"contacts",
-					0,                                 # docstatus
+					0,  # docstatus
 					contact_name,
 					details.get("full_name") or contact_name,
 					details.get("email_id"),
@@ -518,24 +525,19 @@ def reshape_opportunity_contacts() -> dict:
 	# UPDATE per chunk — the previous per-row set_value loop deadlocked
 	# against the preceding tabCRM Contacts bulk_insert's index locks.
 	if scalar_backfills:
+		cd_upd = frappe.qb.DocType("CRM Deal")
 		for offset in range(0, len(scalar_backfills), CHUNK_SIZE):
 			chunk = scalar_backfills[offset : offset + CHUNK_SIZE]
 			try:
-				whens: list[str] = []
-				args: list[object] = []
+				contact_case = Case()
 				for deal_name, primary_contact in chunk:
-					whens.append("WHEN %s THEN %s")
-					args.extend([deal_name, primary_contact])
-				placeholders = ", ".join(["%s"] * len(chunk))
-				args.extend(name for name, _ in chunk)
-				frappe.db.sql(
-					f"""
-					UPDATE `tabCRM Deal`
-					SET contact = CASE name {' '.join(whens)} END
-					WHERE name IN ({placeholders})
-					  AND (contact IS NULL OR contact = '')
-					""",
-					args,
+					contact_case = contact_case.when(cd_upd.name == deal_name, primary_contact)
+				chunk_names = [deal_name for deal_name, _ in chunk]
+				(
+					frappe.qb.update(cd_upd)
+					.set(cd_upd.contact, contact_case)
+					.where(cd_upd.name.isin(chunk_names) & (cd_upd.contact.isnull() | (cd_upd.contact == "")))
+					.run()
 				)
 			except Exception as e:
 				_bump_failed(result, f"backfill CRM Deal.contact (chunk @ {offset})", e)
@@ -543,29 +545,31 @@ def reshape_opportunity_contacts() -> dict:
 	# Mark the matching row primary if no row ended up flagged (when the row
 	# was created on a previous run with is_primary=0 because the core
 	# records runner hadn't set contact_person yet).
+	cc_upd = frappe.qb.DocType("CRM Contacts")
 	for d in deals:
 		if not d["contact_person"]:
 			continue
 		try:
-			frappe.db.sql(
-				"""
-				UPDATE `tabCRM Contacts`
-				SET is_primary = CASE WHEN contact = %(primary)s THEN 1 ELSE 0 END
-				WHERE parenttype = 'CRM Deal'
-				  AND parent = %(parent)s
-				""",
-				{"primary": d["contact_person"], "parent": d["opp_name"]},
+			(
+				frappe.qb.update(cc_upd)
+				.set(
+					cc_upd.is_primary,
+					Case().when(cc_upd.contact == d["contact_person"], 1).else_(0),
+				)
+				.where((cc_upd.parenttype == "CRM Deal") & (cc_upd.parent == d["opp_name"]))
+				.run()
 			)
 		except Exception as e:
 			_bump_failed(result, f"primary-flag {d['opp_name']}", e)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
 # ---------------------------------------------------------------------------
 # 4. Opportunity.lost_reasons → CRM Deal.lost_reason (+ auto-create)
 # ---------------------------------------------------------------------------
+
 
 def _ensure_crm_lost_reason(lost_reason: str, cache: set[str]) -> tuple[bool, str]:
 	if not lost_reason:
@@ -578,11 +582,8 @@ def _ensure_crm_lost_reason(lost_reason: str, cache: set[str]) -> tuple[bool, st
 		cache.add(lost_reason)
 		return False, ""
 
-	src = frappe.db.sql(
-		"SELECT * FROM `tabOpportunity Lost Reason` WHERE name = %s",
-		(lost_reason,),
-		as_dict=True,
-	)
+	olr = frappe.qb.DocType("Opportunity Lost Reason")
+	src = (frappe.qb.from_(olr).select(olr.star).where(olr.name == lost_reason)).run(as_dict=True)
 	if not src:
 		return False, f"tabOpportunity Lost Reason '{lost_reason}' missing"
 	src = src[0]
@@ -607,13 +608,14 @@ def _ensure_crm_lost_reason(lost_reason: str, cache: set[str]) -> tuple[bool, st
 def reshape_opportunity_lost_reasons() -> dict:
 	"""Migrate Opportunity's lost-reason data onto the migrated CRM Deal:
 
-	  - First lost_reasons child row → `CRM Deal.lost_reason` (if empty).
-	  - Extra lost_reasons rows + free-form `Opportunity.order_lost_reason`
-	    text → appended to `CRM Deal.lost_notes` with a separator.
+	- First lost_reasons child row → `CRM Deal.lost_reason` (if empty).
+	- Extra lost_reasons rows + free-form `Opportunity.order_lost_reason`
+	  text → appended to `CRM Deal.lost_notes` with a separator.
 	"""
 	result = _empty_result()
 
-	migrated_deals = set(frappe.db.sql_list("SELECT name FROM `tabCRM Deal`"))
+	deal_tbl = frappe.qb.DocType("CRM Deal")
+	migrated_deals = set(r[0] for r in frappe.qb.from_(deal_tbl).select(deal_tbl.name).run())
 	if not migrated_deals:
 		return result
 
@@ -625,16 +627,14 @@ def reshape_opportunity_lost_reasons() -> dict:
 		return result
 	child_dt = lr_field.options
 
-	rows = frappe.db.sql(
-		f"""
-		SELECT parent, lost_reason
-		FROM `tab{child_dt}`
-		WHERE parenttype = 'Opportunity'
-		  AND parentfield = 'lost_reasons'
-		ORDER BY parent, idx
-		""",
-		as_dict=True,
-	)
+	child_tbl = frappe.qb.DocType(child_dt)
+	rows = (
+		frappe.qb.from_(child_tbl)
+		.select(child_tbl.parent, child_tbl.lost_reason)
+		.where((child_tbl.parenttype == "Opportunity") & (child_tbl.parentfield == "lost_reasons"))
+		.orderby(child_tbl.parent)
+		.orderby(child_tbl.idx)
+	).run(as_dict=True)
 	# Group lost_reasons by Opportunity, dropping empty rows.
 	per_opp: dict[str, list[str]] = {}
 	for r in rows:
@@ -647,20 +647,19 @@ def reshape_opportunity_lost_reasons() -> dict:
 	# if the column exists (it's vanilla ERPNext, but defensively check).
 	detail_text: dict[str, str] = {}
 	if "order_lost_reason" in frappe.db.get_table_columns("Opportunity"):
-		text_rows = frappe.db.sql(
-			"""
-			SELECT name, order_lost_reason
-			FROM `tabOpportunity`
-			WHERE order_lost_reason IS NOT NULL AND order_lost_reason != ''
-			""",
-			as_dict=True,
-		)
+		opp = frappe.qb.DocType("Opportunity")
+		text_rows = (
+			frappe.qb.from_(opp)
+			.select(opp.name, opp.order_lost_reason)
+			.where(opp.order_lost_reason.isnotnull() & (opp.order_lost_reason != ""))
+		).run(as_dict=True)
 		detail_text = {r["name"]: r["order_lost_reason"].strip() for r in text_rows}
 
 	if not per_opp and not detail_text:
 		return result
 
-	cache: set[str] = set(frappe.db.sql_list("SELECT name FROM `tabCRM Lost Reason`"))
+	clr = frappe.qb.DocType("CRM Lost Reason")
+	cache: set[str] = set(r[0] for r in frappe.qb.from_(clr).select(clr.name).run())
 	all_opps = set(per_opp) | set(detail_text)
 
 	for opp_name in all_opps:
@@ -687,7 +686,10 @@ def reshape_opportunity_lost_reasons() -> dict:
 				current = frappe.db.get_value("CRM Deal", opp_name, "lost_reason")
 				if not current:
 					frappe.db.set_value(
-						"CRM Deal", opp_name, "lost_reason", reasons[0],
+						"CRM Deal",
+						opp_name,
+						"lost_reason",
+						reasons[0],
 						update_modified=False,
 					)
 					changed = True
@@ -701,17 +703,14 @@ def reshape_opportunity_lost_reasons() -> dict:
 
 			if parts:
 				marker = "\n\n".join(parts)
-				existing_notes = cstr(
-					frappe.db.get_value("CRM Deal", opp_name, "lost_notes")
-				)
+				existing_notes = cstr(frappe.db.get_value("CRM Deal", opp_name, "lost_notes"))
 				if marker not in existing_notes:
-					new_notes = (
-						f"{existing_notes}\n\n{marker}"
-						if existing_notes.strip()
-						else marker
-					)
+					new_notes = f"{existing_notes}\n\n{marker}" if existing_notes.strip() else marker
 					frappe.db.set_value(
-						"CRM Deal", opp_name, "lost_notes", new_notes,
+						"CRM Deal",
+						opp_name,
+						"lost_notes",
+						new_notes,
 						update_modified=False,
 					)
 					changed = True
@@ -723,7 +722,7 @@ def reshape_opportunity_lost_reasons() -> dict:
 		except Exception as e:
 			_bump_failed(result, key, e)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
@@ -756,6 +755,7 @@ def _derive_note_title(custom_title: str | None, note_html: str | None) -> str:
 	if not note_html:
 		return "Note"
 	import re
+
 	text = re.sub(r"<[^>]+>", " ", note_html)
 	text = re.sub(r"\s+", " ", text).strip()
 	return text[:80] or "Note"
@@ -774,6 +774,7 @@ def _ensure_note_marker_field() -> None:
 	if frappe.db.exists("Custom Field", {"dt": "FCRM Note", "fieldname": _NOTE_MARKER_FIELD}):
 		return
 	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
 	create_custom_fields(
 		{
 			"FCRM Note": [
@@ -811,11 +812,27 @@ def _resolve_source_note_title_field() -> str | None:
 # Source/target fields already handled by reshape_notes — exclude from
 # the scalar carry-through to avoid double-writing.
 _NOTE_RESERVED_FIELDS = {
-	"name", "parent", "parenttype", "parentfield", "idx",
-	"owner", "creation", "modified", "modified_by", "docstatus",
-	"_user_tags", "_comments", "_assign", "_liked_by",
-	"title", "content", "reference_doctype", "reference_docname",
-	"note", "added_by", "added_on",
+	"name",
+	"parent",
+	"parenttype",
+	"parentfield",
+	"idx",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+	"docstatus",
+	"_user_tags",
+	"_comments",
+	"_assign",
+	"_liked_by",
+	"title",
+	"content",
+	"reference_doctype",
+	"reference_docname",
+	"note",
+	"added_by",
+	"added_on",
 	"custom_title",  # source-side title shape, handled by title resolver
 }
 
@@ -858,11 +875,7 @@ def _reanchor_note_children() -> int:
 	"""
 	src_meta = frappe.get_meta("CRM Note")
 	tgt_meta = frappe.get_meta("FCRM Note")
-	tgt_table_fields = {
-		df.fieldname: df.options
-		for df in tgt_meta.fields
-		if df.fieldtype == "Table"
-	}
+	tgt_table_fields = {df.fieldname: df.options for df in tgt_meta.fields if df.fieldtype == "Table"}
 
 	total = 0
 	for df in src_meta.fields:
@@ -872,21 +885,24 @@ def _reanchor_note_children() -> int:
 			continue
 
 		child_dt = df.options
-		count_row = frappe.db.sql(
-			f"""
-			SELECT COUNT(*)
-			FROM `tab{child_dt}` c
-			JOIN `tabFCRM Note` f ON f.name = c.parent
-			WHERE c.parenttype = 'CRM Note'
-			  AND c.parentfield = %s
-			""",
-			(df.fieldname,),
-		)
+		# Pre-count via a JOIN-based qb SELECT — converted from raw SQL.
+		c = frappe.qb.DocType(child_dt)
+		f = frappe.qb.DocType("FCRM Note")
+		count_row = (
+			frappe.qb.from_(c)
+			.inner_join(f)
+			.on(f.name == c.parent)
+			.select(Count("*"))
+			.where((c.parenttype == "CRM Note") & (c.parentfield == df.fieldname))
+		).run()
 		n = int(count_row[0][0]) if count_row else 0
 		if not n:
 			continue
 
-		frappe.db.sql(
+		# UPDATE...JOIN can't be expressed cleanly in pypika; the JOIN guards
+		# against re-anchoring children whose CRM Note has not been migrated
+		# to FCRM Note yet, so we keep the raw SQL here.
+		frappe.db.sql(  # nosemgrep: frappe-sql-format-injection -- child_dt is df.options from source meta (a DocType name), not user input; table names can't be parameterised in SQL
 			f"""
 			UPDATE `tab{child_dt}` c
 			JOIN `tabFCRM Note` f ON f.name = c.parent
@@ -954,43 +970,56 @@ def reshape_notes(source_doctype: str) -> dict:
 	# `_reanchor_note_children` after the bulk insert.
 	carry_fields = _shared_scalar_note_fields(title_field)
 
-	select_cols = (
-		"name, parent, owner, creation, modified, modified_by, docstatus, "
-		"note, added_by, added_on"
-	)
+	crm_note = frappe.qb.DocType("CRM Note")
+	select_fields = [
+		crm_note.name,
+		crm_note.parent,
+		crm_note.owner,
+		crm_note.creation,
+		crm_note.modified,
+		crm_note.modified_by,
+		crm_note.docstatus,
+		crm_note.note,
+		crm_note.added_by,
+		crm_note.added_on,
+	]
 	if title_field:
-		select_cols += f", `{title_field}` AS note_title"
+		select_fields.append(crm_note[title_field].as_("note_title"))
 	for cf in carry_fields:
-		select_cols += f", `{cf}`"
+		select_fields.append(crm_note[cf])
 
-	rows = frappe.db.sql(
-		f"""
-		SELECT {select_cols}
-		FROM `tabCRM Note`
-		WHERE parenttype = %(pt)s
-		  AND parentfield = 'notes'
-		""",
-		{"pt": source_doctype},
-		as_dict=True,
-	)
+	rows = (
+		frappe.qb.from_(crm_note)
+		.select(*select_fields)
+		.where((crm_note.parenttype == source_doctype) & (crm_note.parentfield == "notes"))
+	).run(as_dict=True)
 	if not rows:
 		return result
 
-	migrated_targets = set(
-		frappe.db.sql_list(f"SELECT name FROM `tab{target_doctype}`")
-	)
+	tgt_tbl = frappe.qb.DocType(target_doctype)
+	migrated_targets = set(r[0] for r in frappe.qb.from_(tgt_tbl).select(tgt_tbl.name).run())
 	# Identify already-migrated FCRM Notes by the marker field (mirror of
 	# the `custom_source_todo` pattern on CRM Task).
+	fcrm_note = frappe.qb.DocType("FCRM Note")
 	existing_markers = set(
-		frappe.db.sql_list(
-			f"SELECT `{_NOTE_MARKER_FIELD}` FROM `tabFCRM Note` "
-			f"WHERE `{_NOTE_MARKER_FIELD}` IS NOT NULL"
-		)
+		r[0]
+		for r in frappe.qb.from_(fcrm_note)
+		.select(fcrm_note[_NOTE_MARKER_FIELD])
+		.where(fcrm_note[_NOTE_MARKER_FIELD].isnotnull())
+		.run()
 	)
 
 	target_cols = [
-		"name", "owner", "creation", "modified", "modified_by", "docstatus",
-		"title", "content", "reference_doctype", "reference_docname",
+		"name",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"docstatus",
+		"title",
+		"content",
+		"reference_doctype",
+		"reference_docname",
 		_NOTE_MARKER_FIELD,
 		*carry_fields,
 	]
@@ -1015,20 +1044,22 @@ def reshape_notes(source_doctype: str) -> dict:
 			modified = r.get("modified") or creation
 			modified_by = owner
 
-			to_insert.append((
-				target_name,
-				owner,
-				creation,
-				modified,
-				modified_by,
-				r.get("docstatus") or 0,
-				_derive_note_title(r.get("note_title"), r.get("note")),
-				r.get("note") or "",
-				target_doctype,
-				r["parent"],
-				marker,
-				*(r.get(cf) for cf in carry_fields),
-			))
+			to_insert.append(
+				(
+					target_name,
+					owner,
+					creation,
+					modified,
+					modified_by,
+					r.get("docstatus") or 0,
+					_derive_note_title(r.get("note_title"), r.get("note")),
+					r.get("note") or "",
+					target_doctype,
+					r["parent"],
+					marker,
+					*(r.get(cf) for cf in carry_fields),
+				)
+			)
 			existing_markers.add(marker)
 		except Exception as e:
 			_bump_failed(result, key, e)
@@ -1059,7 +1090,8 @@ def reshape_notes(source_doctype: str) -> dict:
 	except Exception as e:
 		result["failed"] += 1
 		result["last_error"] = (
-			f"reanchor note children: {e}" if not result["last_error"]
+			f"reanchor note children: {e}"
+			if not result["last_error"]
 			else f"{result['last_error']} | reanchor: {e}"
 		)[:500]
 		frappe.log_error(
@@ -1067,13 +1099,14 @@ def reshape_notes(source_doctype: str) -> dict:
 			message=frappe.get_traceback(),
 		)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
 # ---------------------------------------------------------------------------
 # 6. Synthesise ToDo rows from the migrated _assign JSON cache
 # ---------------------------------------------------------------------------
+
 
 def reshape_assignments(source_doctype: str) -> dict:
 	"""Build ToDo rows on the CRM target side from the `_assign` JSON
@@ -1101,14 +1134,12 @@ def reshape_assignments(source_doctype: str) -> dict:
 	if not frappe.db.exists("DocType", "ToDo"):
 		return result
 
-	rows = frappe.db.sql(
-		f"""
-		SELECT name, owner, _assign
-		FROM `tab{target_doctype}`
-		WHERE _assign IS NOT NULL AND _assign != '' AND _assign != '[]'
-		""",
-		as_dict=True,
-	)
+	tgt_tbl = frappe.qb.DocType(target_doctype)
+	rows = (
+		frappe.qb.from_(tgt_tbl)
+		.select(tgt_tbl.name, tgt_tbl.owner, tgt_tbl._assign)
+		.where(tgt_tbl._assign.isnotnull() & (tgt_tbl._assign != "") & (tgt_tbl._assign != "[]"))
+	).run(as_dict=True)
 	if not rows:
 		return result
 
@@ -1119,30 +1150,34 @@ def reshape_assignments(source_doctype: str) -> dict:
 	# one — including both here is what makes the dedup correct regardless
 	# of step ordering. Source name == target name (preserved by the
 	# core records runner), so the same `reference_name` keys both sides.
+	todo = frappe.qb.DocType("ToDo")
 	existing = set(
-		frappe.db.sql(
-			"""
-			SELECT reference_name, allocated_to
-			FROM `tabToDo`
-			WHERE reference_type IN (%s, %s)
-			  AND status = 'Open'
-			""",
-			(source_doctype, target_doctype),
-		)
+		frappe.qb.from_(todo)
+		.select(todo.reference_name, todo.allocated_to)
+		.where(todo.reference_type.isin([source_doctype, target_doctype]) & (todo.status == "Open"))
+		.run()
 	)
 
 	target_cols = [
-		"name", "owner", "creation", "modified", "modified_by", "docstatus",
-		"status", "priority", "date", "allocated_to", "description",
-		"reference_type", "reference_name", "assigned_by",
+		"name",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"docstatus",
+		"status",
+		"priority",
+		"date",
+		"allocated_to",
+		"description",
+		"reference_type",
+		"reference_name",
+		"assigned_by",
 	]
 	to_insert: list[tuple] = []
 	now = frappe.utils.now()
 	today = frappe.utils.today()
-	default_description = (
-		"Assignment migrated from ERPNext "
-		f"{source_doctype}"
-	)
+	default_description = f"Assignment migrated from ERPNext {source_doctype}"
 
 	for r in rows:
 		try:
@@ -1162,22 +1197,24 @@ def reshape_assignments(source_doctype: str) -> dict:
 				result["skipped"] += 1
 				continue
 			existing.add(key)
-			to_insert.append((
-				frappe.generate_hash(length=10),
-				assigned_by,        # owner of the ToDo row
-				now,                # creation
-				now,                # modified
-				assigned_by,        # modified_by
-				0,                  # docstatus
-				"Open",             # status
-				"Medium",           # priority
-				today,              # date
-				user,               # allocated_to
-				default_description,
-				target_doctype,     # reference_type
-				r["name"],          # reference_name
-				assigned_by,        # assigned_by
-			))
+			to_insert.append(
+				(
+					frappe.generate_hash(length=10),
+					assigned_by,  # owner of the ToDo row
+					now,  # creation
+					now,  # modified
+					assigned_by,  # modified_by
+					0,  # docstatus
+					"Open",  # status
+					"Medium",  # priority
+					today,  # date
+					user,  # allocated_to
+					default_description,
+					target_doctype,  # reference_type
+					r["name"],  # reference_name
+					assigned_by,  # assigned_by
+				)
+			)
 
 	if to_insert:
 		try:
@@ -1198,7 +1235,7 @@ def reshape_assignments(source_doctype: str) -> dict:
 				message=frappe.get_traceback(),
 			)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
@@ -1214,9 +1251,7 @@ _TASK_MARKER_FIELD = "custom_source_todo"
 # frappe/desk/form/assign_to.py:78 — `_("Assignment for {0} {1}")`).
 # We filter them out so basic assignment-only ToDos don't become tasks
 # the user would have to clean up.
-_ASSIGNMENT_DESC_RE = __import__("re").compile(
-	r"^\s*Assignment for \S", flags=__import__("re").IGNORECASE
-)
+_ASSIGNMENT_DESC_RE = __import__("re").compile(r"^\s*Assignment for \S", flags=__import__("re").IGNORECASE)
 
 # ERPNext ToDo statuses that don't share a name with CRM Task. Everything
 # else (Backlog, In Progress, …) is a passthrough — only these three are
@@ -1239,6 +1274,7 @@ def _ensure_task_marker_field() -> None:
 	if frappe.db.exists("Custom Field", {"dt": "CRM Task", "fieldname": _TASK_MARKER_FIELD}):
 		return
 	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
 	create_custom_fields(
 		{
 			"CRM Task": [
@@ -1273,6 +1309,7 @@ def _derive_task_title(custom_title: str | None, description_html: str | None) -
 	if not description_html:
 		return "Task"
 	import re
+
 	text = re.sub(r"<[^>]+>", " ", description_html)
 	text = re.sub(r"\s+", " ", text).strip()
 	return text[:80] or "Task"
@@ -1314,32 +1351,42 @@ def reshape_tasks(source_doctype: str) -> dict:
 	# Custom Field — only pull it if the column actually exists, so the
 	# query stays compatible with vanilla Frappe sites.
 	todo_columns = (
-		"name", "owner", "creation", "modified", "modified_by", "docstatus",
-		"status", "priority", "date", "allocated_to", "description",
-		"reference_type", "reference_name", "assigned_by",
+		"name",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"docstatus",
+		"status",
+		"priority",
+		"date",
+		"allocated_to",
+		"description",
+		"reference_type",
+		"reference_name",
+		"assigned_by",
 	)
 	has_custom_title = "custom_title" in frappe.db.get_table_columns("ToDo")
-	select_cols = ", ".join(f"`{c}`" for c in todo_columns)
+	todo_tbl = frappe.qb.DocType("ToDo")
+	todo_select = [todo_tbl[c] for c in todo_columns]
 	if has_custom_title:
-		select_cols += ", `custom_title`"
-
-	todos = frappe.db.sql(
-		f"SELECT {select_cols} FROM `tabToDo` WHERE reference_type = %s",
-		(source_doctype,),
-		as_dict=True,
-	)
+		todo_select.append(todo_tbl["custom_title"])
+	todos = (
+		frappe.qb.from_(todo_tbl).select(*todo_select).where(todo_tbl.reference_type == source_doctype)
+	).run(as_dict=True)
 	if not todos:
 		return result
 
-	migrated_targets = set(
-		frappe.db.sql_list(f"SELECT name FROM `tab{target_doctype}`")
-	)
+	tgt_tbl = frappe.qb.DocType(target_doctype)
+	migrated_targets = set(r[0] for r in frappe.qb.from_(tgt_tbl).select(tgt_tbl.name).run())
 	# Already-converted ToDo names (idempotency).
+	crm_task = frappe.qb.DocType("CRM Task")
 	already_converted = set(
-		frappe.db.sql_list(
-			f"SELECT `{_TASK_MARKER_FIELD}` FROM `tabCRM Task` "
-			f"WHERE `{_TASK_MARKER_FIELD}` IS NOT NULL"
-		)
+		r[0]
+		for r in frappe.qb.from_(crm_task)
+		.select(crm_task[_TASK_MARKER_FIELD])
+		.where(crm_task[_TASK_MARKER_FIELD].isnotnull())
+		.run()
 	)
 
 	# CRM Task uses autoname=autoincrement, which Frappe backs with a
@@ -1351,10 +1398,21 @@ def reshape_tasks(source_doctype: str) -> dict:
 
 	task_cols = [
 		"name",
-		"owner", "creation", "modified", "modified_by", "docstatus",
-		"title", "description", "assigned_to", "status", "priority",
-		"due_date", "reference_doctype", "reference_docname",
-		_TASK_MARKER_FIELD, "_assign",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"docstatus",
+		"title",
+		"description",
+		"assigned_to",
+		"status",
+		"priority",
+		"due_date",
+		"reference_doctype",
+		"reference_docname",
+		_TASK_MARKER_FIELD,
+		"_assign",
 	]
 	task_values: list[tuple] = []
 	# Markers we're about to insert — used later to map source ToDo →
@@ -1388,24 +1446,26 @@ def reshape_tasks(source_doctype: str) -> dict:
 			modified_by = t.get("modified_by") or owner
 			marker = str(t["name"])
 
-			task_values.append((
-				get_next_val("CRM Task"),
-				owner,
-				creation,
-				modified,
-				modified_by,
-				t.get("docstatus") or 0,
-				_derive_task_title(t.get("custom_title"), t.get("description")),
-				t.get("description") or "",
-				assigned_to,
-				_map_todo_status(t.get("status")),
-				(t.get("priority") or "Medium").capitalize(),
-				t.get("date") or None,
-				target_doctype,
-				t["reference_name"],
-				marker,
-				_assign_json,
-			))
+			task_values.append(
+				(
+					get_next_val("CRM Task"),
+					owner,
+					creation,
+					modified,
+					modified_by,
+					t.get("docstatus") or 0,
+					_derive_task_title(t.get("custom_title"), t.get("description")),
+					t.get("description") or "",
+					assigned_to,
+					_map_todo_status(t.get("status")),
+					(t.get("priority") or "Medium").capitalize(),
+					t.get("date") or None,
+					target_doctype,
+					t["reference_name"],
+					marker,
+					_assign_json,
+				)
+			)
 			new_markers.append(marker)
 		except Exception as e:
 			_bump_failed(result, key, e)
@@ -1428,44 +1488,59 @@ def reshape_tasks(source_doctype: str) -> dict:
 				title="Migrator reshape: CRM Task bulk_insert",
 				message=frappe.get_traceback(),
 			)
-			frappe.db.commit()
 			return result
 
 	# Synthesise the assignment ToDo rows that CRM Task.after_insert would
 	# normally produce. Look up the autoincrement names assigned to the
 	# tasks we just inserted, then bulk_insert one ToDo per assignee.
 	if new_markers:
-		assigned_tasks = frappe.db.sql(
-			f"""
-			SELECT `name`, `owner`, `creation`, `assigned_to`, `due_date`,
-			       `{_TASK_MARKER_FIELD}` AS marker
-			FROM `tabCRM Task`
-			WHERE `{_TASK_MARKER_FIELD}` IN %(markers)s
-			  AND `assigned_to` IS NOT NULL AND `assigned_to` != ''
-			""",
-			{"markers": tuple(new_markers)},
-			as_dict=True,
-		)
+		ct = frappe.qb.DocType("CRM Task")
+		assigned_tasks = (
+			frappe.qb.from_(ct)
+			.select(
+				ct.name,
+				ct.owner,
+				ct.creation,
+				ct.assigned_to,
+				ct.due_date,
+				ct[_TASK_MARKER_FIELD].as_("marker"),
+			)
+			.where(
+				ct[_TASK_MARKER_FIELD].isin(list(new_markers))
+				& ct.assigned_to.isnotnull()
+				& (ct.assigned_to != "")
+			)
+		).run(as_dict=True)
 
 		# Dedup against any pre-existing ToDos so re-runs don't duplicate.
+		todo = frappe.qb.DocType("ToDo")
+		dedup_names = [str(r["name"]) for r in assigned_tasks] if assigned_tasks else [""]
 		existing_assign_keys = set(
-			frappe.db.sql(
-				"""
-				SELECT reference_name, allocated_to
-				FROM `tabToDo`
-				WHERE reference_type = 'CRM Task'
-				  AND status = 'Open'
-				  AND reference_name IN %(names)s
-				""",
-				{"names": tuple(str(r["name"]) for r in assigned_tasks)}
-				if assigned_tasks else {"names": ("",)},
+			frappe.qb.from_(todo)
+			.select(todo.reference_name, todo.allocated_to)
+			.where(
+				(todo.reference_type == "CRM Task")
+				& (todo.status == "Open")
+				& (todo.reference_name.isin(dedup_names))
 			)
+			.run()
 		)
 
 		todo_cols = [
-			"name", "owner", "creation", "modified", "modified_by", "docstatus",
-			"status", "priority", "date", "allocated_to", "description",
-			"reference_type", "reference_name", "assigned_by",
+			"name",
+			"owner",
+			"creation",
+			"modified",
+			"modified_by",
+			"docstatus",
+			"status",
+			"priority",
+			"date",
+			"allocated_to",
+			"description",
+			"reference_type",
+			"reference_name",
+			"assigned_by",
 		]
 		todo_values: list[tuple] = []
 		for row in assigned_tasks:
@@ -1475,22 +1550,24 @@ def reshape_tasks(source_doctype: str) -> dict:
 				continue
 			assigned_by = row["owner"] or "Administrator"
 			created = row["creation"] or frappe.utils.now()
-			todo_values.append((
-				frappe.generate_hash(length=10),
-				assigned_by,
-				created,
-				created,
-				assigned_by,
-				0,
-				"Open",
-				"Medium",
-				row.get("due_date"),
-				user,
-				f"Assignment for CRM Task {task_name}",
-				"CRM Task",
-				task_name,
-				assigned_by,
-			))
+			todo_values.append(
+				(
+					frappe.generate_hash(length=10),
+					assigned_by,
+					created,
+					created,
+					assigned_by,
+					0,
+					"Open",
+					"Medium",
+					row.get("due_date"),
+					user,
+					f"Assignment for CRM Task {task_name}",
+					"CRM Task",
+					task_name,
+					assigned_by,
+				)
+			)
 
 		if todo_values:
 			try:
@@ -1517,7 +1594,7 @@ def reshape_tasks(source_doctype: str) -> dict:
 					message=frappe.get_traceback(),
 				)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
@@ -1551,27 +1628,41 @@ def reshape_opportunity_stage_logs() -> dict:
 	if not frappe.db.exists("DocType", "CRM Status Change Log"):
 		return result
 
-	rows = frappe.db.sql(
-		f"""
-		SELECT name, parent, owner, creation, modified, modified_by,
-		       docstatus, idx,
-		       {", ".join(f"`{c}`" for c in _STAGE_LOG_SHARED_COLS)}
-		FROM `tabCRM Stage Change Log`
-		WHERE parenttype = 'Opportunity'
-		  AND parentfield = 'custom_stage_change_log'
-		ORDER BY parent, idx
-		""",
-		as_dict=True,
-	)
+	scl = frappe.qb.DocType("CRM Stage Change Log")
+	rows = (
+		frappe.qb.from_(scl)
+		.select(
+			scl.name,
+			scl.parent,
+			scl.owner,
+			scl.creation,
+			scl.modified,
+			scl.modified_by,
+			scl.docstatus,
+			scl.idx,
+			*[scl[c] for c in _STAGE_LOG_SHARED_COLS],
+		)
+		.where((scl.parenttype == "Opportunity") & (scl.parentfield == "custom_stage_change_log"))
+		.orderby(scl.parent)
+		.orderby(scl.idx)
+	).run(as_dict=True)
 	if not rows:
 		return result
 
-	migrated_deals = set(frappe.db.sql_list("SELECT name FROM `tabCRM Deal`"))
+	deal_tbl = frappe.qb.DocType("CRM Deal")
+	migrated_deals = set(r[0] for r in frappe.qb.from_(deal_tbl).select(deal_tbl.name).run())
 
 	target_cols = [
-		"name", "owner", "creation", "modified", "modified_by",
-		"docstatus", "idx",
-		"parent", "parenttype", "parentfield",
+		"name",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"docstatus",
+		"idx",
+		"parent",
+		"parenttype",
+		"parentfield",
 		*_STAGE_LOG_SHARED_COLS,
 	]
 	to_insert: list[tuple] = []
@@ -1581,19 +1672,21 @@ def reshape_opportunity_stage_logs() -> dict:
 			continue
 		owner = r.get("owner") or "Administrator"
 		creation = r.get("creation")
-		to_insert.append((
-			f"mig-stagelog-{r['name']}",
-			owner,
-			creation,
-			r.get("modified") or creation,
-			r.get("modified_by") or owner,
-			r.get("docstatus") or 0,
-			r.get("idx") or 0,
-			r["parent"],
-			"CRM Deal",
-			"status_change_log",
-			*(r.get(c) for c in _STAGE_LOG_SHARED_COLS),
-		))
+		to_insert.append(
+			(
+				f"mig-stagelog-{r['name']}",
+				owner,
+				creation,
+				r.get("modified") or creation,
+				r.get("modified_by") or owner,
+				r.get("docstatus") or 0,
+				r.get("idx") or 0,
+				r["parent"],
+				"CRM Deal",
+				"status_change_log",
+				*(r.get(c) for c in _STAGE_LOG_SHARED_COLS),
+			)
+		)
 
 	if to_insert:
 		try:
@@ -1614,13 +1707,14 @@ def reshape_opportunity_stage_logs() -> dict:
 				message=frappe.get_traceback(),
 			)
 
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
 	return result
 
 
 # ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
+
 
 def reshape_for(source_doctype: str) -> dict:
 	"""Return totals dict for all reshapes applicable to one source step."""
