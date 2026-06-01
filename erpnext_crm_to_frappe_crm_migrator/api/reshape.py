@@ -1599,121 +1599,17 @@ def reshape_tasks(source_doctype: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 8. Opportunity.custom_stage_change_log → CRM Deal.status_change_log
-# ---------------------------------------------------------------------------
-
-# Columns shared between CRM Stage Change Log (source child) and CRM Status
-# Change Log (target child). Stage-only columns are dropped; Status-only
-# columns (from_type, to_type, last_status_change_log) are left at default.
-_STAGE_LOG_SHARED_COLS = ("from", "from_date", "to", "to_date", "duration", "log_owner")
-
-
-def reshape_opportunity_stage_logs() -> dict:
-	"""Merge Opportunity.custom_stage_change_log children into the migrated
-	CRM Deal's status_change_log.
-
-	Source rows live in `tabCRM Stage Change Log`; target child rows live
-	in `tabCRM Status Change Log` (different child doctype, so this is a
-	reshape, not a parenttype re-anchor). The two doctypes share six
-	useful columns — those are copied verbatim. Parent (deal name) is
-	preserved via the source-meta-preservation policy in the core
-	records runner.
-
-	Idempotent: target rows are named `mig-stagelog-<source_name>` so
-	re-runs hit the same row + ignore_duplicates skip.
-	"""
-	result = _empty_result()
-	if not frappe.db.exists("DocType", "CRM Stage Change Log"):
-		return result
-	if not frappe.db.exists("DocType", "CRM Status Change Log"):
-		return result
-
-	scl = frappe.qb.DocType("CRM Stage Change Log")
-	rows = (
-		frappe.qb.from_(scl)
-		.select(
-			scl.name,
-			scl.parent,
-			scl.owner,
-			scl.creation,
-			scl.modified,
-			scl.modified_by,
-			scl.docstatus,
-			scl.idx,
-			*[scl[c] for c in _STAGE_LOG_SHARED_COLS],
-		)
-		.where((scl.parenttype == "Opportunity") & (scl.parentfield == "custom_stage_change_log"))
-		.orderby(scl.parent)
-		.orderby(scl.idx)
-	).run(as_dict=True)
-	if not rows:
-		return result
-
-	deal_tbl = frappe.qb.DocType("CRM Deal")
-	migrated_deals = set(r[0] for r in frappe.qb.from_(deal_tbl).select(deal_tbl.name).run())
-
-	target_cols = [
-		"name",
-		"owner",
-		"creation",
-		"modified",
-		"modified_by",
-		"docstatus",
-		"idx",
-		"parent",
-		"parenttype",
-		"parentfield",
-		*_STAGE_LOG_SHARED_COLS,
-	]
-	to_insert: list[tuple] = []
-	for r in rows:
-		if r["parent"] not in migrated_deals:
-			result["skipped"] += 1
-			continue
-		owner = r.get("owner") or "Administrator"
-		creation = r.get("creation")
-		to_insert.append(
-			(
-				f"mig-stagelog-{r['name']}",
-				owner,
-				creation,
-				r.get("modified") or creation,
-				r.get("modified_by") or owner,
-				r.get("docstatus") or 0,
-				r.get("idx") or 0,
-				r["parent"],
-				"CRM Deal",
-				"status_change_log",
-				*(r.get(c) for c in _STAGE_LOG_SHARED_COLS),
-			)
-		)
-
-	if to_insert:
-		try:
-			for offset in range(0, len(to_insert), CHUNK_SIZE):
-				chunk = to_insert[offset : offset + CHUNK_SIZE]
-				frappe.db.bulk_insert(
-					"CRM Status Change Log",
-					fields=target_cols,
-					values=chunk,
-					ignore_duplicates=True,
-				)
-			result["ok"] += len(to_insert)
-		except Exception as e:
-			result["failed"] += len(to_insert)
-			result["last_error"] = f"bulk_insert stage→status merge: {e}"[:500]
-			frappe.log_error(
-				title="Migrator reshape: stage-log merge bulk_insert",
-				message=frappe.get_traceback(),
-			)
-
-	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist this reshape's writes before the next reshape (or activity rewrite) reads them back
-	return result
-
-
-# ---------------------------------------------------------------------------
 # Entry-point: which reshapes apply to a given source step?
 # ---------------------------------------------------------------------------
+#
+# Note: Opportunity.custom_stage_change_log → CRM Deal.custom_stage_change_log
+# is NOT handled here. Once frappe_crm_xt mirrors the same Table field on
+# CRM Deal (pointing at the same CRM Stage Change Log child doctype), the
+# runner's `_reanchor_shared_children` re-anchors the rows automatically via
+# its same-name + same-options match. The check tolerates sites where the
+# doctype or the target custom field is absent — it just skips silently.
+# Same story for Opportunity.status_change_log → CRM Deal.status_change_log
+# (both Table → CRM Status Change Log).
 
 
 def reshape_for(source_doctype: str) -> dict:
@@ -1732,7 +1628,6 @@ def reshape_for(source_doctype: str) -> dict:
 		_merge(totals, reshape_opportunity_items())
 		_merge(totals, reshape_opportunity_contacts())
 		_merge(totals, reshape_opportunity_lost_reasons())
-		_merge(totals, reshape_opportunity_stage_logs())
 		_merge(totals, reshape_notes(source_doctype))
 		_merge(totals, reshape_assignments(source_doctype))
 		_merge(totals, reshape_tasks(source_doctype))

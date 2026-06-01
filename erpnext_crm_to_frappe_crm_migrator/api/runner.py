@@ -1040,9 +1040,8 @@ SHARED_CHILD_FIELD_MERGES: dict[tuple[str, str], str] = {
 	# whose child doctype IS the same as the target's canonical Table,
 	# and the rows should be folded into it rather than re-anchored
 	# under a different field name. When the source/target child
-	# doctypes differ (e.g. CRM Stage Change Log vs CRM Status Change
-	# Log), use a `api/reshape.py` function instead — see
-	# `reshape_opportunity_stage_logs`.
+	# doctypes differ entirely, write a function in `api/reshape.py`
+	# instead.
 }
 
 
