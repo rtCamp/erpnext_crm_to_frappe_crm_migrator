@@ -61,6 +61,8 @@ bench --site your-site.localhost migrate
 4. Click **Run Migration** when all 8 tabs are locked. Or use **Default: Skip All & Migrate** for a one-click cutover.
 5. Verify on the Frappe CRM frontend. When happy, click the red **Clean up ERPNext source data** button to drop the originals.
 
+If the migration looks wrong before cleanup runs, the red **Undo migration** button reverts every target-side write (activity refs, reanchored children, dynamic-link repoint, marker-tagged synthetic rows, CRM parent rows). Source data is preserved by the migrator so re-running is non-destructive. See [docs/dev.md](docs/dev.md#undo-migration) for the full phase list.
+
 Watch progress on `/app/crm-migration-run`.
 
 ## Contributing

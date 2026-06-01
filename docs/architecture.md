@@ -11,7 +11,9 @@ A one-time cutover from ERPNext CRM to Frappe CRM on the same site. Four phases 
 | 3 | **Schema reshape** — populate Table-typed children and cross-doctype relationships that need a structural change (Items, Contacts, Lost Reasons, Notes, ToDos, Stage Logs, Dynamic Links). | `api/reshape.py` |
 | 4 | **Activity reference rewrite** — flip `reference_doctype` on Comments/ToDos/FCRM Notes/Versions/etc. from ERPNext source values to CRM target values. Reference names are unchanged. | `api/activity.py` |
 
-Plus a **post-migration cleanup** button that deletes the ERPNext source rows once the cutover is verified — covered in `dev.md`.
+Plus two opt-in buttons covered in `dev.md`:
+- **Undo migration** (`api/undo.py`) — reverts every target-side write of phases 2–4 and drops the CRM target rows. ERPNext source rows are left intact, so re-running the migration is non-destructive. Refuses if cleanup already deleted the source rows.
+- **Clean up ERPNext source data** (`api/cleanup.py`) — deletes the ERPNext source rows once the cutover is verified. Mutually exclusive with Undo.
 
 ## Source / target pairs
 
