@@ -172,3 +172,117 @@ def rewrite_all_activities() -> list[tuple[str, dict]]:
 	]
 	out.append(("ToDo", rewrite_assignment_todos()))
 	return out
+
+
+# ---------------------------------------------------------------------------
+# Revert — flip activity references back from CRM targets to ERPNext sources
+# ---------------------------------------------------------------------------
+#
+# Safe to run as long as the source ERPNext rows (Lead / Opportunity /
+# Prospect / lookups) still exist — the migrator preserves them by default.
+# After post-migration cleanup deletes those source rows, reverting would
+# re-create orphan references; the Settings-form button confirms this with
+# the user before firing.
+
+
+def revert_activity_doctype(
+	activity_dt: str,
+	doctype_field: str,
+	name_field: str,
+) -> dict:
+	"""Flip reference_doctype on one activity doctype from CRM target back to
+	ERPNext source. Mirror of `rewrite_activity_doctype`; result shape matches
+	so the runner can fold it into the same CRM Migration Run Step counters.
+	"""
+	result: dict = {
+		"ok": 0,
+		"skipped": 0,
+		"failed": 0,
+		"last_error": "",
+		"sample_failed": [],
+	}
+
+	if not frappe.db.exists("DocType", activity_dt):
+		return result
+
+	for source_dt, target_dt in REVERSE_DOCTYPE_MAP.items():
+		try:
+			matched = frappe.db.count(activity_dt, {doctype_field: target_dt})
+			if not matched:
+				result["skipped"] += 1
+				continue
+
+			table = frappe.qb.DocType(activity_dt)
+			(
+				frappe.qb.update(table)
+				.set(table[doctype_field], source_dt)
+				.where(table[doctype_field] == target_dt)
+				.run()
+			)
+			result["ok"] += matched
+		except Exception as e:
+			result["failed"] += 1
+			result["last_error"] = f"{target_dt}: {e}"[:500]
+			result["sample_failed"].append(f"{target_dt} → {source_dt}")
+			frappe.log_error(
+				title=f"Migrator activity revert: {activity_dt} ({target_dt})",
+				message=frappe.get_traceback(),
+			)
+
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist per-doctype activity reverts so the next doctype sees a consistent state
+	return result
+
+
+def revert_assignment_todos() -> dict:
+	"""Flip reference_type back from CRM target to source on assignment ToDos."""
+	result: dict = {
+		"ok": 0,
+		"skipped": 0,
+		"failed": 0,
+		"last_error": "",
+		"sample_failed": [],
+	}
+
+	todo = frappe.qb.DocType("ToDo")
+	for source_dt, target_dt in REVERSE_DOCTYPE_MAP.items():
+		try:
+			matched = frappe.db.count(
+				"ToDo",
+				{
+					"reference_type": target_dt,
+					"description": ["like", "Assignment for %"],
+				},
+			)
+			if not matched:
+				result["skipped"] += 1
+				continue
+
+			(
+				frappe.qb.update(todo)
+				.set(todo.reference_type, source_dt)
+				.where((todo.reference_type == target_dt) & (todo.description.like("Assignment for %")))
+				.run()
+			)
+			result["ok"] += int(matched)
+		except Exception as e:
+			result["failed"] += 1
+			result["last_error"] = f"{target_dt}: {e}"[:500]
+			result["sample_failed"].append(f"{target_dt} → {source_dt}")
+			frappe.log_error(
+				title=f"Migrator activity revert: ToDo assignment ({target_dt})",
+				message=frappe.get_traceback(),
+			)
+
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- function-end barrier — persist per-doctype activity reverts so the next doctype sees a consistent state
+	return result
+
+
+def revert_all_activities() -> list[tuple[str, dict]]:
+	"""Reverse of `rewrite_all_activities`. Same return shape so the runner
+	can produce matching CRM Migration Run Step rows.
+	"""
+	out: list[tuple[str, dict]] = [
+		(dt, revert_activity_doctype(dt, fld_dt, fld_name)) for (dt, fld_dt, fld_name) in ACTIVITY_SPECS
+	]
+	out.append(("ToDo", revert_assignment_todos()))
+	return out

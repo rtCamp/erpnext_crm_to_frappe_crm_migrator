@@ -348,6 +348,158 @@ function start_cleanup(frm) {
 	});
 }
 
+function start_undo(frm) {
+	frappe.call({
+		method: "erpnext_crm_to_frappe_crm_migrator.api.undo.get_undo_preview",
+		freeze: true,
+		freeze_message: __("Scanning target tables…"),
+		callback(r) {
+			if (!r.message || !r.message.ok) return;
+			const m = r.message;
+
+			if (!m.all_locked) {
+				frappe.msgprint({
+					title: __("Cannot undo"),
+					message: __("Lock every tab first. Unlocked: {0}", [
+						m.unlocked_tabs.join(", "),
+					]),
+					indicator: "red",
+				});
+				return;
+			}
+			if (!m.source_rows_remain) {
+				frappe.msgprint({
+					title: __("Cannot undo"),
+					message: __(
+						"ERPNext source rows have been cleaned up. Reverting activity references " +
+							"now would create orphan references. Undo is only safe before " +
+							"<i>Clean up ERPNext source data</i> runs."
+					),
+					indicator: "red",
+				});
+				return;
+			}
+
+			const marker_html =
+				(m.marker_tagged || [])
+					.map(
+						(x) =>
+							`<li><b>${escape_html(x.doctype)}</b> — ${x.count} rows ` +
+							`(tagged <code>${escape_html(x.marker)}</code>)</li>`
+					)
+					.join("") || `<li class="text-muted">${__("(none)")}</li>`;
+
+			const reanchor_html =
+				(m.reanchored || [])
+					.map(
+						(x) =>
+							`<li><code>${escape_html(x.doctype)}</code> — ${x.count} rows ` +
+							`(parenttype <code>${escape_html(x.from)}</code> → <code>${escape_html(
+								x.to
+							)}</code>)</li>`
+					)
+					.join("") || `<li class="text-muted">${__("(none)")}</li>`;
+
+			const reshape_children_html =
+				(m.reshape_children || [])
+					.map(
+						(c) =>
+							`<li><code>tab${escape_html(c.doctype)}</code> — ${c.count} rows ` +
+							`(parenttype ∈ ${escape_html(c.parenttypes.join(", "))})</li>`
+					)
+					.join("") || `<li class="text-muted">${__("(none)")}</li>`;
+
+			const parents_html =
+				(m.parents || [])
+					.map((p) => `<li><b>${escape_html(p.doctype)}</b> — ${p.count} rows</li>`)
+					.join("") || `<li class="text-muted">${__("(none)")}</li>`;
+
+			const body =
+				`<div style="font-size:13px">` +
+				`<p>${__(
+					"This will revert the target side back to its pre-migration state. " +
+						"ERPNext source data is left untouched (it was preserved by the migrator)."
+				)}</p>` +
+				`<h6 style="margin-top:14px">${__(
+					"Activity references — flip back to ERPNext source"
+				)}</h6>` +
+				`<p class="text-muted" style="margin-top:0">${__(
+					"Comments, ToDos (assignment), Notes, etc. that point at CRM Lead / CRM Deal / … " +
+						"will be re-pointed at Lead / Opportunity / …"
+				)}</p>` +
+				`<h6 style="margin-top:14px">${__("Dynamic Link repoint — flip back")}</h6>` +
+				`<p class="text-muted" style="margin-top:0">${__(
+					"{0} Contact + Address links pointing at CRM targets",
+					[m.dynamic_link_repoints || 0]
+				)}</p>` +
+				`<h6 style="margin-top:14px">${__(
+					"Re-anchored children — parenttype reverted"
+				)}</h6>` +
+				`<ul style="padding-left:18px">${reanchor_html}</ul>` +
+				`<h6 style="margin-top:14px">${__(
+					"Marker-tagged synthetic rows — deleted"
+				)}</h6>` +
+				`<ul style="padding-left:18px">${marker_html}</ul>` +
+				`<p class="text-muted" style="margin-top:0">${__(
+					"Plus {0} open CRM-side assignment ToDos (synthesised from _assign cache).",
+					[m.synth_open_todos || 0]
+				)}</p>` +
+				`<h6 style="margin-top:14px">${__(
+					"Reshape-synthesised children — deleted"
+				)}</h6>` +
+				`<ul style="padding-left:18px">${reshape_children_html}</ul>` +
+				`<h6 style="margin-top:14px">${__("CRM parent target rows — DELETED")}</h6>` +
+				`<ul style="padding-left:18px">${parents_html}</ul>` +
+				`<p class="text-warning" style="margin-top:8px">${__(
+					"<b>This is destructive but reversible:</b> re-running the migration will recreate everything from the still-existing ERPNext source data."
+				)}</p>` +
+				`</div>`;
+
+			const dialog = new frappe.ui.Dialog({
+				title: __("Undo migration"),
+				size: "large",
+				fields: [
+					{ fieldtype: "HTML", fieldname: "preview", options: body },
+					{
+						fieldtype: "Data",
+						fieldname: "confirm_text",
+						label: __("Type DELETE to confirm"),
+						reqd: 1,
+					},
+				],
+				primary_action_label: __("Undo migration"),
+				primary_action({ confirm_text }) {
+					if (confirm_text !== "DELETE") {
+						frappe.msgprint({
+							title: __("Wrong confirmation"),
+							message: __("Type the word DELETE exactly to proceed."),
+							indicator: "orange",
+						});
+						return;
+					}
+					dialog.hide();
+					frappe.call({
+						method: "erpnext_crm_to_frappe_crm_migrator.api.undo.undo_migration",
+						args: { confirm: "DELETE" },
+						freeze: true,
+						freeze_message: __("Enqueuing undo run…"),
+						callback(r2) {
+							if (!r2.message || !r2.message.ok) return;
+							frappe.show_alert({
+								message: __("Undo run enqueued: {0}", [r2.message.run]),
+								indicator: "orange",
+							});
+							frappe.set_route("Form", "CRM Migration Run", r2.message.run);
+						},
+					});
+				},
+			});
+			dialog.get_primary_btn().addClass("btn-danger");
+			dialog.show();
+		},
+	});
+}
+
 function render_migrator_details(frm) {
 	const wrapper =
 		frm.fields_dict.migration_details_html && frm.fields_dict.migration_details_html.$wrapper;
@@ -541,6 +693,19 @@ frappe.ui.form.on("CRM Migration Settings", {
 				},
 				__("Migration")
 			);
+		}
+
+		// --- Undo migration (destructive, target-side wipe + revert) ---
+		// Reverts every target-side write the migrator made: activity
+		// refs, dynamic-link repoint, reanchored children, marker-tagged
+		// synthetic rows (FCRM Note / CRM Task), reshape children on
+		// CRM Deal, and finally the CRM parent target rows. Source
+		// ERPNext data is left untouched (it was preserved by the
+		// migrator). Refuses if cleanup already deleted the source rows.
+		if (all_locked(frm)) {
+			frm.add_custom_button(__("Undo migration"), () => {
+				start_undo(frm);
+			}).addClass("btn-danger");
 		}
 
 		// --- Clean up ERPNext source data (destructive, post-migration) ---
