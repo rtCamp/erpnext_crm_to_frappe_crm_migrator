@@ -43,7 +43,7 @@ The reshape step runs different functions per source doctype. The order matters 
 |---|---|
 | Lead | `reshape_notes` → `reshape_assignments` → `reshape_tasks` |
 | Prospect | `reshape_notes` → `reshape_assignments` → `reshape_tasks` |
-| Opportunity | `reshape_opportunity_items` → `reshape_opportunity_contacts` → `reshape_opportunity_lost_reasons` → `reshape_opportunity_stage_logs` → `reshape_notes` → `reshape_assignments` → `reshape_tasks` → `reshape_dynamic_links` |
+| Opportunity | `reshape_opportunity_items` → `reshape_opportunity_contacts` → `reshape_opportunity_lost_reasons` → `reshape_notes` → `reshape_assignments` → `reshape_tasks` → `reshape_dynamic_links` |
 
 `reshape_dynamic_links` runs once at the end of the Opportunity step (the last source in dependency order) so the Contact/Address `.links` repoint resolves against the full set of migrated targets.
 
@@ -51,7 +51,7 @@ The reshape step runs different functions per source doctype. The order matters 
 
 Two patterns the migrator uses for child-table data:
 
-- **Re-anchor** (in `runner.py`, `_reanchor_shared_children`): when the source and target Table fields share the *same* child doctype (e.g. `Lead.status_change_log` and `CRM Lead.status_change_log` both → `CRM Status Change Log`), flip `parenttype` on the child rows in one UPDATE. No re-insert, child meta preserved.
-- **Reshape** (in `reshape.py`): when the child doctype itself changes (e.g. `Opportunity.custom_stage_change_log` → `CRM Stage Change Log` while target uses `CRM Status Change Log`), copy rows across tables on the columns shared by both schemas. Tagged with `mig-stagelog-<source_id>` for idempotency.
+- **Re-anchor** (in `runner.py`, `_reanchor_shared_children`): when the source and target Table fields share the *same* child doctype (e.g. `Lead.status_change_log` and `CRM Lead.status_change_log` both → `CRM Status Change Log`, or `Opportunity.custom_stage_change_log` and `CRM Deal.custom_stage_change_log` both → `CRM Stage Change Log`), flip `parenttype` on the child rows in one UPDATE. No re-insert, child meta preserved. Silently skips when the target side doesn't carry the field — useful for sites without `frappe_crm_xt`'s `CRM Stage Change Log` doctype.
+- **Reshape** (in `reshape.py`): when the child doctype itself changes (e.g. Opportunity Item → CRM Products), copy rows across tables on the mapped columns.
 
 See [`mapping.md`](mapping.md) for the field-level details and [`decisions.md`](decisions.md) for the rationale behind the source-meta preservation, bulk_insert, and repoint choices.
