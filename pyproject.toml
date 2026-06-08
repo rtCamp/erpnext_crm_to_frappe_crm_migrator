@@ -1,7 +1,7 @@
 [project]
 name = "erpnext_crm_to_frappe_crm_migrator"
 authors = [
-    { name = "rtCamp", email = "deepak.vkumar@rtcamp.com"}
+    { name = "rtCamp", email = "frappe@rtcamp.com"}
 ]
 description = "One-time migration tool to move data from ERPNext CRM (Lead/Opportunity/Prospect) to Frappe CRM."
 requires-python = ">=3.14"
