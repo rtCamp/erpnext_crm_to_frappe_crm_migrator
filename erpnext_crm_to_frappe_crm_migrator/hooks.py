@@ -1,7 +1,9 @@
 app_name = "erpnext_crm_to_frappe_crm_migrator"
 app_title = "ERPNext CRM to Frappe CRM Migrator"
 app_publisher = "rtCamp"
-app_description = "One-time migration tool to move data from ERPNext CRM (Lead/Opportunity/Prospect) to Frappe CRM."
+app_description = (
+	"One-time migration tool to move data from ERPNext CRM (Lead/Opportunity/Prospect) to Frappe CRM."
+)
 app_email = "deepak.vkumar@rtcamp.com"
 app_license = "agpl-3.0"
 required_apps = ["frappe/erpnext"]
@@ -251,4 +253,3 @@ required_apps = ["frappe/erpnext"]
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

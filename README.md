@@ -2,6 +2,8 @@
 
 One-time migration tool to move data from **ERPNext CRM** (Lead, Opportunity, Prospect + lookup masters) to **Frappe CRM** (CRM Lead, CRM Deal, CRM Organization, …) on the same site.
 
+![CRM Migration Settings](https://github.com/user-attachments/assets/ba66df7a-b9f2-4699-961c-c8725b869c03)
+
 ## What it does
 
 Copies records, child tables, and activity references from ERPNext CRM tables to their Frappe CRM equivalents. Source-meta preservation (`name` / `owner` / `creation` / `modified` / `modified_by` / `docstatus`) keeps the audit trail intact and makes any document that references a migrated record by name keep resolving.
@@ -64,6 +66,18 @@ bench --site your-site.localhost migrate
 If the migration looks wrong before cleanup runs, the red **Undo migration** button reverts every target-side write (activity refs, reanchored children, dynamic-link repoint, marker-tagged synthetic rows, CRM parent rows). Source data is preserved by the migrator so re-running is non-destructive. See [docs/dev.md](docs/dev.md#undo-migration) for the full phase list.
 
 Watch progress on `/app/crm-migration-run`.
+
+## Screenshots
+
+Each tab shows the per-doctype field mapping — auto-mapped fields (including customs), type-mismatch warnings, and the per-tab **Lock & Freeze** state.
+
+![Lead field mapping](https://github.com/user-attachments/assets/f1cb9b17-4dcb-4b89-b2a2-89de3c7fa49c)
+
+![Lead field mapping (continued)](https://github.com/user-attachments/assets/37dc753a-5e19-4be5-a591-1876ffc0dc9b)
+
+The **CRM Migration Run** doctype tracks progress and per-step status as the migration executes.
+
+![CRM Migration Run](https://github.com/user-attachments/assets/81870d55-a0c5-4967-8fb4-f102af2bc81d)
 
 ## Contributing
 

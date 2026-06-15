@@ -51,12 +51,10 @@ _SHARED_DOCTYPES: list[tuple[str, str]] = [
 # guards
 # ---------------------------------------------------------------------------
 
+
 def _all_tabs_locked(settings) -> tuple[bool, list[str]]:
 	"""Return (all_locked, list_of_unlocked_source_names)."""
-	unlocked = [
-		s for s in SOURCE_DOCTYPES
-		if not settings.get(f"{s.lower().replace(' ', '_')}_locked")
-	]
+	unlocked = [s for s in SOURCE_DOCTYPES if not settings.get(f"{s.lower().replace(' ', '_')}_locked")]
 	return (not unlocked, unlocked)
 
 
@@ -69,6 +67,7 @@ def _has_successful_run() -> bool:
 # ---------------------------------------------------------------------------
 # whitelisted endpoints
 # ---------------------------------------------------------------------------
+
 
 @frappe.whitelist()
 def get_cleanup_preview() -> dict:
@@ -96,14 +95,20 @@ def get_cleanup_preview() -> dict:
 			continue
 		n = frappe.db.count(dt, {"parenttype": ["in", parent_types]})
 		if n:
-			children.append({
-				"doctype": dt,
-				"count": n,
-				"parenttypes": parent_types,
-			})
+			children.append(
+				{
+					"doctype": dt,
+					"count": n,
+					"parenttypes": parent_types,
+				}
+			)
 
 	skipped = [
-		{"doctype": dt, "reason": reason, "count": frappe.db.count(dt) if frappe.db.exists("DocType", dt) else 0}
+		{
+			"doctype": dt,
+			"reason": reason,
+			"count": frappe.db.count(dt) if frappe.db.exists("DocType", dt) else 0,
+		}
 		for dt, reason in _SHARED_DOCTYPES
 	]
 
